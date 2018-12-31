@@ -12,6 +12,7 @@ def make_one_hot(labels, num_classes):
 
 
 def pad_to_match(x, out_shape):
+    bs = x.shape[0]
     h = x.shape[2]
     w = x.shape[3]
     dh = (out_shape[1] - h)
@@ -142,7 +143,7 @@ class Pooling2dCell(BaseCell):
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
-        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[channel_dim] == out_dim[channel_dim] and in_dim[channel_dim] < in_dim[1]
+        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[channel_dim-1] == out_dim[channel_dim-1] and in_dim[channel_dim-1] <= in_dim[1]
 
     def get_param_options(self):
         max_stride = max(self.in_dim[1] // self.out_dim[1], 1)
@@ -158,7 +159,6 @@ class Pooling2dCell(BaseCell):
         kernel_size = int(params['kernel'])
         kernel_size = self.out_dim[self.channel_dim-1]
         stride = min(int(params['stride']), kernel_size)
-        print(x.shape, params)
         if params['function'] > 0:
             f = F.max_pool2d
         else:

@@ -122,6 +122,7 @@ class Trainer(object):
             return y[labels]
 
         state = self.world.observe()
+        last_loss = None
         for e in range(epochs):
             for i, batch in enumerate(dataset):
                 x, y = batch
@@ -141,8 +142,11 @@ class Trainer(object):
                 optimizer_ft.step()
 
                 reward = (prior_world_loss - world_loss)
+                if last_loss is not None:
+                    reward = (last_loss - world_loss)
+                last_loss = world_loss
                 print('World Loss: %s , Reward: %s' % (world_loss.item(), reward.item()))
-                reward = torch.tensor([reward], device=device)
+                reward = torch.sigmoid(torch.tensor([reward], device=device))
                 next_state = self.world.observe()
 
                 # Store the transition in memory

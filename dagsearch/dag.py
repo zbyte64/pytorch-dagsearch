@@ -78,8 +78,9 @@ class Node(nn.Module):
             if dw or dh:
                 transforms.append(Interpolate(self.in_dim[1:]))
             #adapt channels
-            if in_node.out_dim[0] != self.in_dim[0]:
-                transforms.append(nn.Conv2d(in_node.out_dim[0], self.in_dim[0], 1, 1))
+            #if in_node.out_dim[0] != self.in_dim[0]:
+            transforms.append(nn.Conv2d(in_node.out_dim[0], self.in_dim[0], 1, 1))
+            #TODO batch normalize here
             return torch.nn.Sequential(*transforms)
         if len(self.in_dim) == 1 and len(in_node.out_dim) == 3:
             #squash
@@ -113,7 +114,10 @@ class Node(nn.Module):
                     x_i = self.in_node_adapters[i](x_i)
                     assert x_i.shape[1:] == self.in_dim, '%s != %s (from %s)' % (x_i.shape, self.in_dim, x[i].shape)
                     x_avg.append(x_i)
-            x = torch.sum(torch.stack(x_avg), dim=self.channel_dim)
+            if len(x_avg) > 1:
+                x = torch.sum(torch.stack(x_avg, dim=self.channel_dim), dim=self.channel_dim)
+            else:
+                x = x_avg[0]
         else:
             assert x.shape
         assert x.shape[1:] == self.in_dim
@@ -127,14 +131,16 @@ class Node(nn.Module):
             except Exception as error:
                 print('Failed:', f, f.get_param_dict(), f.in_dim, f.out_dim)
                 print(f.get_param_options())
-                print(error)
-                continue
-                #raise
-        matched_outputs = list(filter(lambda x: x.shape[1:] == self.out_dim, sensor_outputs))
+                raise
+        matched_outputs = list(filter(lambda z: z.shape[1:] == self.out_dim, sensor_outputs))
         assert len(matched_outputs)
-        out = torch.stack(matched_outputs)
-        out = torch.sum(out, dim=self.channel_dim)
-        assert out.shape[1:] == self.out_dim, '%s != %s' % (out.shape[1:], self.out_dim)
+        if len(matched_outputs) > 1:
+            out = torch.stack(matched_outputs, dim=self.channel_dim)
+            out = torch.sum(out, dim=self.channel_dim)
+        else:
+            out = matched_outputs[0]
+        assert out.shape[0] == x.shape[0], str(out.shape)
+        assert out.shape[1:] == self.out_dim, '%s != %s' % (out.shape, self.out_dim)
         return out
 
     def observe(self):
