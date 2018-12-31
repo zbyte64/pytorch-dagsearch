@@ -104,12 +104,11 @@ class Conv2dCell(BaseCell):
     #CONSIDER: we can oversize our kernel and slice down, allowing for agent to change size or stride
     def __init__(self, in_dim, out_dim, channel_dim):
         super(Conv2dCell, self).__init__(in_dim, out_dim, channel_dim)
-        self.kernel = torch.ones((
+        self.weights = torch.ones((
             out_dim[channel_dim-1],
             in_dim[channel_dim-1],
             self.max_kernel_size, self.max_kernel_size), requires_grad=True)
-        nn.init.xavier_uniform(self.kernel)
-        self.batch_norm = nn.BatchNorm2d(out_dim[channel_dim-1])
+        nn.init.xavier_uniform(self.weights)
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
@@ -127,12 +126,11 @@ class Conv2dCell(BaseCell):
         params = self.get_param_dict()
         kernel_size = int(params['kernel'])
         stride = min(int(params['stride']), kernel_size)
-        kernel = self.kernel
+        kernel = self.weights
         if kernel_size < self.max_kernel_size:
             kernel = torch.narrow(kernel, 2, 0, kernel_size)
             kernel = torch.narrow(kernel, 3, 0, kernel_size)
         x = torch.relu(F.conv2d(x, kernel, stride=stride))
-        x = self.batch_norm(x)
         x = pad_to_match(x, self.out_dim)
         return x
 
@@ -174,12 +172,11 @@ class DeConv2dCell(BaseCell):
     #CONSIDER: we can oversize our kernel and slice down, allowing for agent to change size or stride
     def __init__(self, in_dim, out_dim, channel_dim):
         super(DeConv2dCell, self).__init__(in_dim, out_dim, channel_dim)
-        self.kernel = torch.ones((
+        self.weights = torch.ones((
             in_dim[channel_dim-1],
             out_dim[channel_dim-1],
             self.max_kernel_size, self.max_kernel_size), requires_grad=True)
-        nn.init.xavier_uniform(self.kernel)
-        self.batch_norm = nn.BatchNorm2d(out_dim[channel_dim-1])
+        nn.init.xavier_uniform(self.weights)
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
@@ -196,11 +193,10 @@ class DeConv2dCell(BaseCell):
         params = self.get_param_dict()
         kernel_size = int(params['kernel'])
         stride = min(int(params['stride']), kernel_size)
-        kernel = self.kernel
+        kernel = self.weights
         if kernel_size < self.max_kernel_size:
             kernel = torch.narrow(kernel, 2, 0, kernel_size)
             kernel = torch.narrow(kernel, 3, 0, kernel_size)
         x = torch.relu(F.conv_transpose2d(x, kernel, stride=stride))
-        x = self.batch_norm(x)
         x = pad_to_match(x, self.out_dim)
         return x

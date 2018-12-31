@@ -86,7 +86,7 @@ class Node(nn.Module):
             #adapt channels
             #if in_node.out_dim[0] != self.in_dim[0]:
             transforms.append(nn.Conv2d(in_node.out_dim[0], self.in_dim[0], 1, 1))
-            #TODO batch normalize here
+            transforms.append(nn.BatchNorm2d(self.in_dim[0]))
             return torch.nn.Sequential(*transforms)
         if len(self.in_dim) == 1 and len(in_node.out_dim) == 3:
             #squash
@@ -100,12 +100,14 @@ class Node(nn.Module):
                     nn.Conv2d(in_node.out_dim[0], 1, kernel_size, strides),
                     View(new_volume),
                     nn.Linear(new_volume, self.in_volume),
+                    nn.BatchNorm1d(self.in_volume),
                     View(*self.in_dim)
                 )
 
         return torch.nn.Sequential(
             View(in_node.out_volume),
             nn.Linear(in_node.out_volume, self.in_volume),
+            nn.BatchNorm1d(self.in_volume),
             View(*self.in_dim)
         )
 

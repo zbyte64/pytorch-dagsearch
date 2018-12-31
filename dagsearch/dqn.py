@@ -64,7 +64,7 @@ TARGET_UPDATE = 10
 class Trainer(object):
     def __init__(self, world):
         self.world = world
-        self.world_size = world.observe().shape[0]
+        self.world_size = world.observe().shape[0]+ 1 #add last loss delta
         self.action_size = world.actions_shape()[0]
         self.policy_net = DQN(self.world_size, self.action_size)
         self.target_net = DQN(self.world_size, self.action_size)
@@ -121,39 +121,35 @@ class Trainer(object):
             y = torch.eye(num_classes)
             return y[labels]
 
-        state = self.world.observe()
+        loss_delta = 0.0
         last_loss = None
         for e in range(epochs):
             for i, batch in enumerate(dataset):
                 x, y = batch
                 _y = make_one_hot(y, 10) #TODO generalize training
-                prior_py = torch.softmax(self.world(x), dim=1)
-                prior_world_loss = criterion(prior_py, _y)
 
                 # Select and perform an action
+                state = torch.cat([self.world.observe(), torch.FloatTensor([loss_delta])])
                 action = self.select_action(state)
                 a, d = torch.argmax(action[:-1]).item(), torch.sigmoid(action[-1]).item()
                 self.world.perform_action(a, d)
-
 
                 py = torch.softmax(self.world(x), dim=1)
                 world_loss = criterion(py, _y)
                 world_loss.backward()
                 optimizer_ft.step()
 
-                reward = (prior_world_loss - world_loss)
+                reward = torch.FloatTensor([0.])
                 if last_loss is not None:
+                    loss_delta = (last_loss - world_loss)
                     reward = (last_loss - world_loss)
                 last_loss = world_loss
                 print('World Loss: %s , Reward: %s' % (world_loss.item(), reward.item()))
                 reward = torch.sigmoid(torch.tensor([reward], device=device))
-                next_state = self.world.observe()
 
+                next_state = torch.cat([self.world.observe(), torch.FloatTensor([loss_delta])])
                 # Store the transition in memory
                 self.memory.push(state, action, next_state, reward)
-
-                # Move to the next state
-                state = next_state
 
                 # Perform one step of the optimization (on the target network)
                 self.optimize_trainer_model()
