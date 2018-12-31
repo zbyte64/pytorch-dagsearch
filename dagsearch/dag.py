@@ -54,6 +54,12 @@ class Node(nn.Module):
     def _register_input(self, in_node):
         self.in_nodes.append(in_node)
         adaptor = self.create_node_adapter(in_node)
+        def init_weights(m):
+            if type(m) == nn.Linear:
+                nn.init.uniform_(m.weight)
+            if type(m) == nn.Conv2d:
+                nn.init.xavier_uniform(m.weight)
+        adaptor.apply(init_weights)
         self.in_node_adapters.append(adaptor)
         self.muted_inputs = torch.cat([self.muted_inputs, -torch.ones(1)])
 
@@ -152,15 +158,16 @@ class Node(nn.Module):
     def toggle_cell(self, world, direction):
         cell_index = world.cell_index
         if cell_index < len(self.muted_cells):
-            self.muted_cells = torch.ones(len(self.muted_cells))
+            self.muted_cells = torch.ones_like(self.muted_cells)
             self.muted_cells[cell_index] = -1
 
     def toggle_input(self, world, direction):
         index = world.input_index
-        #can't toggle the last input
-        if index < len(self.muted_inputs) - 1:
-            self.muted_inputs[index] *= -1
-
+        if index < len(self.muted_inputs):
+            self.muted_inputs = torch.ones_like(self.muted_inputs)
+            self.muted_inputs[index] = -1
+            #can't toggle the last input
+            self.muted_inputs[len(self.muted_inputs)-1] = -1
 
 class Graph(nn.Module):
     def __init__(self, cell_types, in_dim, out_dim, channel_dim=1):
@@ -253,8 +260,9 @@ class World(nn.Module):
         if self.param_index >= param_state.shape[0]:
             assert False, 'This should happen when paging cells'
             self.param_index = 0
+        _, p_min, p_max = self.current_cell.get_param_options()[self.param_index]
         nav_state = torch.FloatTensor([
-            param_state[self.param_index],
+            (param_state[self.param_index] - p_min) / p_max,
             cell_muted,
             input_muted,
             self.node_index / len(self.graph.nodes),
