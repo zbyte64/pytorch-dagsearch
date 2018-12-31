@@ -3,6 +3,7 @@ from torch import nn
 from torch import functional as F
 import numpy as np
 import random
+import networkx as nx
 
 
 flatten = lambda x: x.view(x.shape[0], -1)
@@ -37,7 +38,6 @@ class Node(nn.Module):
         _a = (in_dim, out_dim, channel_dim)
         self.cells = nn.ModuleList([s(*_a) for s in filter(lambda s: s.valid(*_a), cell_types)])
         assert self.cells, str(_a)
-        self.cell_weights = torch.ones(len(self.cells), requires_grad=True)
         self.muted_cells = torch.ones(len(self.cells))
         self.muted_cells[random.randint(0, len(self.cells)-1)] = -1
         self.muted_inputs = -torch.ones(len(in_nodes))
@@ -82,8 +82,7 @@ class Node(nn.Module):
                 transforms.append(nn.Conv2d(in_node.out_dim[0], self.in_dim[0], 1, 1))
             return torch.nn.Sequential(*transforms)
         if len(self.in_dim) == 1 and len(in_node.out_dim) == 3:
-            reduce_by = in_node.out_volume / self.in_volume
-            #TODO conv net to downsample to in_volume
+            #squash
             strides = 1
             kernel_size = 1
             filters = 1
@@ -103,11 +102,14 @@ class Node(nn.Module):
             View(*self.in_dim)
         )
 
+    def is_input_muted(self, idx):
+        return self.muted_inputs[idx] > 0 and idx < len(self.in_nodes) - 1
+
     def forward(self, x):
         if self.in_nodes:
             x_avg = []
             for i, x_i in enumerate(x):
-                if self.muted_inputs[i] < 0 or i == len(self.in_nodes) - 1:
+                if not self.is_input_muted(i):
                     x_i = self.in_node_adapters[i](x_i)
                     assert x_i.shape[1:] == self.in_dim, '%s != %s (from %s)' % (x_i.shape, self.in_dim, x[i].shape)
                     x_avg.append(x_i)
@@ -116,10 +118,18 @@ class Node(nn.Module):
             assert x.shape
         assert x.shape[1:] == self.in_dim
         #print('Node connect:', x.shape, self.in_dim, self.out_dim)
-        _w = torch.sigmoid(self.cell_weights)
         active_sensors = filter(lambda e: self.muted_cells[e[0]], enumerate(self.cells))
         active_sensors = list(active_sensors)
-        sensor_outputs = [f(x) * _w[i] for i, f in active_sensors]
+        sensor_outputs = []
+        for i, f in active_sensors:
+            try:
+                sensor_outputs.append(f(x))
+            except Exception as error:
+                print('Failed:', f, f.get_param_dict(), f.in_dim, f.out_dim)
+                print(f.get_param_options())
+                print(error)
+                continue
+                #raise
         matched_outputs = list(filter(lambda x: x.shape[1:] == self.out_dim, sensor_outputs))
         assert len(matched_outputs)
         out = torch.stack(matched_outputs)
@@ -227,11 +237,10 @@ class World(nn.Module):
     def observe(self):
         graph_state = self.graph.observe()
         node_state = self.current_node.observe()
-        cell_weight = self.current_node.cell_weights[self.cell_index]
         cell_state = self.current_cell.observe()
         cell_muted = self.current_node.muted_cells[self.cell_index]
         if self.input_index < len(self.current_node.muted_inputs):
-            input_muted = self.current_node.muted_inputs[self.input_index]
+            input_muted = self.current_node.is_input_muted(self.input_index)
         else:
             input_muted = 0.
         param_state = self.current_cell.param_state
@@ -241,7 +250,6 @@ class World(nn.Module):
         nav_state = torch.FloatTensor([
             param_state[self.param_index],
             cell_muted,
-            cell_weight,
             input_muted,
             self.node_index / len(self.graph.nodes),
             self.cell_index / len(self.graph.cell_types),
@@ -289,3 +297,21 @@ class World(nn.Module):
 
     def mov_input(self, world, direction):
         self.input_index = self._move(self.input_index, direction, 0, self.node_index)
+
+    def draw(self):
+        G = nx.Graph()
+        for ni, node in enumerate(self.graph.nodes):
+            in_node_n = 'node_%s_input' % ni
+            out_node_n = 'node_%s_output' % ni
+            G.add_node(in_node_n, in_dim=node.in_dim)
+            G.add_node(out_node_n, out_dim=node.out_dim)
+            for ii, in_node in enumerate(node.in_nodes):
+                if not node.is_input_muted(ii):
+                    G.add_edge('node_%s_output' % ii, in_node_n)
+            for ic, cell in enumerate(node.cells):
+                if node.muted_cells[ic] < 0:
+                    c_n = 'node_%s_cell_%s' % (ni, cell.__class__.__name__)
+                    G.add_node(c_n, **cell.get_param_dict())
+                    G.add_edge(in_node_n, c_n)
+                    G.add_edge(c_n, out_node_n)
+        return G

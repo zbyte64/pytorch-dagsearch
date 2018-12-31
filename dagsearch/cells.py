@@ -115,9 +115,11 @@ class Conv2dCell(BaseCell):
         return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] <= out_dim[0]
 
     def get_param_options(self):
+        max_stride = max(self.in_dim[1] // self.out_dim[1], 1)
+        max_kernel_size = min(max(self.in_dim[1] // max_stride - self.out_dim[1], 1), self.max_kernel_size)
         return [
-            ('kernel', 1, self.max_kernel_size),
-            ('stride', 1, 5),
+            ('kernel', 1, max_kernel_size),
+            ('stride', 1, max_stride),
         ]
 
     def forward(self, x):
@@ -144,7 +146,7 @@ class Pooling2dCell(BaseCell):
 
     def get_param_options(self):
         max_stride = max(self.in_dim[1] // self.out_dim[1], 1)
-        max_kernel_size = max(self.in_dim[1] // max_stride - self.out_dim[1], 1)
+        max_kernel_size = min(max(self.in_dim[1] // max_stride - self.out_dim[1], 1), self.max_kernel_size)
         return [
             ('function', 0, 1),
             ('kernel', 1, min(self.max_kernel_size, max_kernel_size)),

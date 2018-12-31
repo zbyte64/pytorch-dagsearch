@@ -2,6 +2,8 @@ from dagsearch.dag import Graph, World
 from dagsearch.cells import CELL_TYPES
 from dagsearch.dqn import Trainer
 from torchvision import datasets, transforms
+import networkx as nx
+import matplotlib.pyplot as plt
 
 from torch import nn
 import torch
@@ -35,4 +37,11 @@ print(world.actions())
 print(world.observe())
 
 t = Trainer(world)
-t.train(data_loader)
+try:
+    t.train(data_loader)
+finally:
+    g = world.draw()
+    labels=dict((n,'%s %s' % (n, ['%s: %s' % (k,v) for k, v in d.items()])) for n,d in g.nodes(data=True))
+    nx.draw(g, node_size=100, labels=labels)
+    #plt.subplot(400)
+    plt.show()

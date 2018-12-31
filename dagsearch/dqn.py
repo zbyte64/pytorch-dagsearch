@@ -137,11 +137,11 @@ class Trainer(object):
 
                 py = torch.softmax(self.world(x), dim=1)
                 world_loss = criterion(py, _y)
-                print('World Loss:', world_loss)
                 world_loss.backward()
                 optimizer_ft.step()
 
-                reward = prior_world_loss - world_loss
+                reward = (prior_world_loss - world_loss)
+                print('World Loss: %s , Reward: %s' % (world_loss.item(), reward.item()))
                 reward = torch.tensor([reward], device=device)
                 next_state = self.world.observe()
 
