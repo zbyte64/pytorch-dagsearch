@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from torch import nn
 import torch
 
-cell_types = CELL_TYPES.keys()
+cell_types = list(CELL_TYPES.keys())
 
 
 in_dim = (1, 28, 28)

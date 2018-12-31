@@ -64,7 +64,7 @@ TARGET_UPDATE = 10
 class Trainer(object):
     def __init__(self, world):
         self.world = world
-        self.world_size = world.observe().shape[0]+ 1 #add last loss delta
+        self.world_size = world.observe().shape[0] + 3 #add last loss delta, loss, forked_loss
         self.action_size = world.actions_shape()[0]
         self.policy_net = DQN(self.world_size, self.action_size)
         self.target_net = DQN(self.world_size, self.action_size)
@@ -114,7 +114,6 @@ class Trainer(object):
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
-        optimizer_ft = optim.SGD(self.world.parameters(), lr=0.001, momentum=0.9)
         criterion = nn.MSELoss()
 
         def make_one_hot(labels, num_classes):
@@ -123,33 +122,33 @@ class Trainer(object):
 
         loss_delta = 0.0
         last_loss = None
+        state = torch.cat([self.world.observe(), torch.FloatTensor([loss_delta, self.world._graph_loss, self.world._forked_graph_loss])])
         for e in range(epochs):
             for i, batch in enumerate(dataset):
                 x, y = batch
                 _y = make_one_hot(y, 10) #TODO generalize training
 
                 # Select and perform an action
-                state = torch.cat([self.world.observe(), torch.FloatTensor([loss_delta])])
                 action = self.select_action(state)
                 a, d = torch.argmax(action[:-1]).item(), torch.sigmoid(action[-1]).item()
                 self.world.perform_action(a, d)
 
-                py = torch.softmax(self.world(x), dim=1)
-                world_loss = criterion(py, _y)
-                world_loss.backward()
-                optimizer_ft.step()
+                forked_loss = criterion(torch.softmax(self.world.forked_graph(x), dim=1), _y)
+                graph_loss = criterion(torch.softmax(self.world.graph(x), dim=1), _y)
+                self.world.optimize(graph_loss, forked_loss)
 
                 reward = torch.FloatTensor([0.])
                 if last_loss is not None:
-                    loss_delta = (last_loss - world_loss)
-                    reward = (last_loss - world_loss)
-                last_loss = world_loss
-                print('World Loss: %s , Reward: %s' % (world_loss.item(), reward.item()))
+                    loss_delta = (last_loss - graph_loss)
+                    reward = (last_loss - graph_loss)
+                last_loss = graph_loss
+                print('Loss: %s , Reward: %s' % (graph_loss.item(), reward.item()))
                 reward = torch.sigmoid(torch.tensor([reward], device=device))
 
-                next_state = torch.cat([self.world.observe(), torch.FloatTensor([loss_delta])])
+                next_state = torch.cat([self.world.observe(), torch.FloatTensor([loss_delta, self.world._graph_loss, self.world._forked_graph_loss])])
                 # Store the transition in memory
                 self.memory.push(state, action, next_state, reward)
+                state = next_state
 
                 # Perform one step of the optimization (on the target network)
                 self.optimize_trainer_model()

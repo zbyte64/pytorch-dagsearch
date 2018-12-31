@@ -1,9 +1,11 @@
 import torch
 from torch import nn
 from torch import functional as F
+import torch.optim as optim
 import numpy as np
 import random
 import networkx as nx
+import copy
 
 
 flatten = lambda x: x.view(x.shape[0], -1)
@@ -220,19 +222,23 @@ class Graph(nn.Module):
         x = self.output_node(outputs)
         return x
 
+    def fork(self):
+        return copy.deepcopy(self)
 
-class World(nn.Module):
+
+class World(object):
     def __init__(self, graph):
         super(World, self).__init__()
         self.graph = graph
+        self.forked_graph = graph.fork()
+        self.graph_optimizer = optim.SGD(graph.parameters(), lr=0.001, momentum=0.9)
+        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.001, momentum=0.9)
+        self._graph_loss = 1.0
+        self._forked_graph_loss = 1.0
         self.node_index = 0
         self.cell_index = 0
         self.param_index = 0
         self.input_index = 0
-
-    def forward(self, x):
-        y = self.graph(x)
-        return y
 
     @property
     def current_node(self):
@@ -285,7 +291,7 @@ class World(nn.Module):
         return (len(actions) + 1, )
 
     def actions(self):
-        nav_actions = [self.mov_node, self.mov_cell, self.mov_param, self.mov_input]
+        nav_actions = [self.mov_node, self.mov_cell, self.mov_param, self.mov_input, self.mov_fork]
         actions = nav_actions + self.current_node.actions() + self.current_cell.actions()
         return actions
 
@@ -313,6 +319,28 @@ class World(nn.Module):
 
     def mov_input(self, world, direction):
         self.input_index = self._move(self.input_index, direction, 0, self.node_index)
+
+    def mov_fork(self, world, direction):
+        keep_current = self._graph_loss >= self._forked_graph_loss
+        self.fork_graph(keep_current)
+
+    def fork_graph(self, keep_current=False):
+        if keep_current:
+            winner = self.graph
+        else:
+            winner = self.forked_graph
+            self.graph_optimizer = self.forked_graph_optimizer
+        self.graph = winner
+        self.forked_graph = winner.fork()
+        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.001, momentum=0.9)
+
+    def optimize(self, graph_loss, forked_loss):
+        self._graph_loss = graph_loss.item()
+        self._forked_graph_loss = forked_loss.item()
+        graph_loss.backward()
+        self.graph_optimizer.step()
+        forked_loss.backward()
+        self.forked_graph_optimizer.step()
 
     def draw(self):
         G = nx.Graph()
