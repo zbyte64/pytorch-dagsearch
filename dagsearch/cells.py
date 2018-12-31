@@ -3,6 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.autograd import Variable
 import numpy as np
+import random
 
 
 def make_one_hot(labels, num_classes):
@@ -43,7 +44,13 @@ class BaseCell(nn.Module):
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.channel_dim = channel_dim
-        self.param_state = torch.ones(len(self.get_param_options()))
+        self.param_state = torch.zeros(len(self.get_param_options()))
+        for i, (n, _min, _max) in enumerate(self.get_param_options()):
+            self.param_state[i] = random.randint(_min, _max)
+
+    @staticmethod
+    def valid(in_dim, out_dim, channel_dim):
+        return True
 
     def observe(self):
         idx = CELL_TYPES.get(self.__class__, -1)
@@ -66,19 +73,16 @@ class BaseCell(nn.Module):
         v = max(min(v, _max), _min)
         self.param_state[param_index] = v
 
-    def valid(self, x):
-        try:
-            y = self.forward(x)
-        except AssertionError:
-            return False
-        return True
-
 
 @register_cell
 class LinearCell(BaseCell):
     def __init__(self, in_dim, out_dim, channel_dim):
         super(LinearCell, self).__init__(in_dim, out_dim, channel_dim)
         self.f = nn.Linear(np.prod(in_dim), np.prod(out_dim))
+
+    @staticmethod
+    def valid(in_dim, out_dim, channel_dim):
+        return len(out_dim) == 1 or len(in_dim) == 1
 
     def get_param_options(self):
         return [('activation', 0, 1)]
@@ -106,6 +110,10 @@ class Conv2dCell(BaseCell):
         nn.init.xavier_uniform(self.kernel)
         self.batch_norm = nn.BatchNorm2d(out_dim[channel_dim-1])
 
+    @staticmethod
+    def valid(in_dim, out_dim, channel_dim):
+        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] <= out_dim[0]
+
     def get_param_options(self):
         return [
             ('kernel', 1, self.max_kernel_size),
@@ -113,7 +121,6 @@ class Conv2dCell(BaseCell):
         ]
 
     def forward(self, x):
-        assert len(x.shape) == 4
         params = self.get_param_dict()
         kernel_size = int(params['kernel'])
         stride = min(int(params['stride']), kernel_size)
@@ -131,21 +138,25 @@ class Conv2dCell(BaseCell):
 class Pooling2dCell(BaseCell):
     max_kernel_size = 5
 
+    @staticmethod
+    def valid(in_dim, out_dim, channel_dim):
+        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[channel_dim] == out_dim[channel_dim] and in_dim[channel_dim] < in_dim[1]
+
     def get_param_options(self):
+        max_stride = max(self.in_dim[1] // self.out_dim[1], 1)
+        max_kernel_size = max(self.in_dim[1] // max_stride - self.out_dim[1], 1)
         return [
             ('function', 0, 1),
-            ('kernel', 1, self.max_kernel_size),
-            ('stride', 1, self.max_kernel_size),
+            ('kernel', 1, min(self.max_kernel_size, max_kernel_size)),
+            ('stride', 1, max_stride),
         ]
 
     def forward(self, x):
-        assert len(x.shape) == 4
-        #requires channel dims to match in size
-        assert self.out_dim[self.channel_dim-1] == self.in_dim[self.channel_dim-1]
         params = self.get_param_dict()
         kernel_size = int(params['kernel'])
         kernel_size = self.out_dim[self.channel_dim-1]
         stride = min(int(params['stride']), kernel_size)
+        print(x.shape, params)
         if params['function'] > 0:
             f = F.max_pool2d
         else:
@@ -167,6 +178,10 @@ class DeConv2dCell(BaseCell):
             self.max_kernel_size, self.max_kernel_size), requires_grad=True)
         nn.init.xavier_uniform(self.kernel)
         self.batch_norm = nn.BatchNorm2d(out_dim[channel_dim-1])
+
+    @staticmethod
+    def valid(in_dim, out_dim, channel_dim):
+        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] > out_dim[0]
 
     def get_param_options(self):
         return [

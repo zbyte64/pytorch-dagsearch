@@ -22,10 +22,21 @@ class View(nn.Module):
         return input.view(input.shape[0], *self.shape)
 
 
+class Interpolate(nn.Module):
+    def __init__(self, size):
+        super(Interpolate, self).__init__()
+        self.size = size
+
+    def forward(self, input):
+        return nn.functional.interpolate(input, self.size)
+
+
 class Node(nn.Module):
     def __init__(self, in_nodes, cell_types, in_dim, out_dim, channel_dim=1):
         super(Node, self).__init__()
-        self.cells = [s(in_dim, out_dim, channel_dim) for s in cell_types]
+        _a = (in_dim, out_dim, channel_dim)
+        self.cells = nn.ModuleList([s(*_a) for s in filter(lambda s: s.valid(*_a), cell_types)])
+        assert self.cells, str(_a)
         self.cell_weights = torch.ones(len(self.cells), requires_grad=True)
         self.muted_cells = torch.ones(len(self.cells))
         self.muted_cells[random.randint(0, len(self.cells)-1)] = -1
@@ -62,18 +73,14 @@ class Node(nn.Module):
             #TODO convolution up or down sample
             dh = in_node.out_dim[2] - self.in_dim[2]
             dw = in_node.out_dim[1] - self.in_dim[1]
-            if dw >= 0:
-                strides = int(max( (in_node.out_dim[1] // self.in_dim[1]) ** .5, 1))
-                kernel_size = int(max(in_node.out_dim[1] // strides - self.in_dim[1] + 1, strides))
-                v = conv2d_volume(self.in_dim[0], self.in_dim[1], kernel_size, strides)
-                #assert v == self.in_volume, str((strides, kernel_size, v, self.in_volume, in_node.out_dim, self.in_dim))
-                reducer = nn.Conv2d(in_node.out_dim[0], self.in_dim[0], kernel_size, strides)
-                return reducer
-            else:
-                strides = max(self.in_dim[1] // in_node.out_dim[1], 1)
-                kernel_size = max(self.in_dim[1] - in_node.out_dim[1] // strides, 1)
-                reducer = nn.ConvTranspose2d(in_node.out_dim[0], self.in_dim[0], kernel_size, strides)
-                return reducer
+            transforms = []
+            #adapt size
+            if dw or dh:
+                transforms.append(Interpolate(self.in_dim[1:]))
+            #adapt channels
+            if in_node.out_dim[0] != self.in_dim[0]:
+                transforms.append(nn.Conv2d(in_node.out_dim[0], self.in_dim[0], 1, 1))
+            return torch.nn.Sequential(*transforms)
         if len(self.in_dim) == 1 and len(in_node.out_dim) == 3:
             reduce_by = in_node.out_volume / self.in_volume
             #TODO conv net to downsample to in_volume
@@ -110,10 +117,12 @@ class Node(nn.Module):
         assert x.shape[1:] == self.in_dim
         #print('Node connect:', x.shape, self.in_dim, self.out_dim)
         _w = torch.sigmoid(self.cell_weights)
-        active_sensors = filter(lambda e: self.muted_cells[e[0]] and e[1].valid(x), enumerate(self.cells))
+        active_sensors = filter(lambda e: self.muted_cells[e[0]], enumerate(self.cells))
         active_sensors = list(active_sensors)
         sensor_outputs = [f(x) * _w[i] for i, f in active_sensors]
-        out = torch.stack(sensor_outputs)
+        matched_outputs = list(filter(lambda x: x.shape[1:] == self.out_dim, sensor_outputs))
+        assert len(matched_outputs)
+        out = torch.stack(matched_outputs)
         out = torch.sum(out, dim=self.channel_dim)
         assert out.shape[1:] == self.out_dim, '%s != %s' % (out.shape[1:], self.out_dim)
         return out
@@ -207,7 +216,7 @@ class World(nn.Module):
     @property
     def current_cell(self):
         if len(self.current_node.cells) <= self.cell_index:
-            assert False, 'All nodes should have the same number of cells'
+            #assert False, 'All nodes should have the same number of cells'
             self.cell_index = 0
         return self.current_node.cells[self.cell_index]
 
@@ -268,6 +277,7 @@ class World(nn.Module):
         self.node_index = self._move(self.node_index, direction, 0, len(self.graph.nodes)-1)
         #ensure input is less or equal to node index
         self.mov_input(world, 0)
+        self.mov_cell(world, 0)
 
     def mov_cell(self, world, direction):
         self.cell_index = self._move(self.cell_index, direction, 0, len(self.graph.cell_types)-1)
