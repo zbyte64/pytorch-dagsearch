@@ -207,6 +207,14 @@ class Graph(nn.Module):
         self.output_node._register_input(node)
         return node
 
+    def pop_last_node(self):
+        _s = lambda t: nn.ModuleList(t[:-1])
+        self.prior_nodes = _s(self.prior_nodes)
+        self.nodes.pop(-2)
+        self.output_node.in_nodes = list(self.prior_nodes)
+        self.output_node.in_node_adapters = _s(self.output_node.in_node_adapters)
+        self.output_node.muted_inputs = -torch.ones(len(self.output_node.in_nodes))
+
     def observe(self):
         return torch.FloatTensor([self.in_volume, self.out_volume, len(self.nodes)])
 
@@ -294,7 +302,7 @@ class World(object):
         return (len(actions) + 1, )
 
     def actions(self):
-        nav_actions = [self.mov_node, self.mov_cell, self.mov_param, self.mov_input, self.mov_fork, self.mov_add_node]
+        nav_actions = [self.mov_node, self.mov_cell, self.mov_param, self.mov_input, self.mov_fork, self.mov_add_node, self.mov_pop_node]
         actions = nav_actions + self.current_node.actions() + self.current_cell.actions()
         return actions
 
@@ -324,7 +332,7 @@ class World(object):
         self.input_index = self._move(self.input_index, direction, 0, self.node_index)
 
     def mov_fork(self, world, direction):
-        keep_current = self._graph_loss + direction >= (self._forked_graph_loss * 0.99)
+        keep_current = self._graph_loss * (direction + 1 / 2) < (self._forked_graph_loss * 0.99)
         self.fork_graph(keep_current)
         self.mov_node(world, 0)
         return -.2
@@ -345,6 +353,15 @@ class World(object):
         world.graph.create_node(tuple(out_dim))
         self.mov_node(world, 0)
         return -.5
+
+    def mov_pop_node(self, world, direction):
+        if len(world.graph.prior_nodes) < 2:
+            return
+        print('#'*20)
+        print('pop last node')
+        world.graph.pop_last_node()
+        self.mov_node(world, 0)
+        return .5
 
     def fork_graph(self, keep_current=False):
         print('#'*20)
