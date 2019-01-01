@@ -24,13 +24,6 @@ data_loader = torch.utils.data.DataLoader(data,
 
 g = Graph(cell_types, in_dim, out_dim)
 g.create_node((4, 28, 28))
-g.create_node((4, 28, 28))
-g.create_node((8, 20, 20))
-g.create_node((8, 20, 20))
-g.create_node((16, 12, 12))
-g.create_node((16, 12, 12))
-g.create_node((32, 4, 4))
-g.create_node((32, 4, 4))
 world = World(g)
 
 print(world.actions())

@@ -142,7 +142,7 @@ class Node(nn.Module):
                 print('Failed:', f, f.get_param_dict(), f.in_dim, f.out_dim)
                 print(f.get_param_options())
                 raise
-        matched_outputs = list(filter(lambda z: z.shape[1:] == self.out_dim, sensor_outputs))
+        matched_outputs = sensor_outputs #list(filter(lambda z: z.shape[1:] == self.out_dim, sensor_outputs))
         assert len(matched_outputs)
         if len(matched_outputs) > 1:
             out = torch.stack(matched_outputs, dim=self.channel_dim)
@@ -281,8 +281,11 @@ class World(object):
         return torch.cat([nav_state, graph_state, node_state, cell_state])
 
     def perform_action(self, action_idx, direction):
+        '''
+        action_idx: [0, n_actions]
+        direction: [-1, 1]
+        '''
         actions = self.actions()
-        direction = int(direction * 2)
         #print('Action:', actions[action_idx], direction)
         return actions[action_idx](self, direction)
 
@@ -291,12 +294,12 @@ class World(object):
         return (len(actions) + 1, )
 
     def actions(self):
-        nav_actions = [self.mov_node, self.mov_cell, self.mov_param, self.mov_input, self.mov_fork]
+        nav_actions = [self.mov_node, self.mov_cell, self.mov_param, self.mov_input, self.mov_fork, self.mov_add_node]
         actions = nav_actions + self.current_node.actions() + self.current_cell.actions()
         return actions
 
     def _move(self, v, direction, _min, _max):
-        v += int(direction)
+        v += int(direction * 2)
         if v < _min:
             v = _max
         elif v > _max:
@@ -321,10 +324,31 @@ class World(object):
         self.input_index = self._move(self.input_index, direction, 0, self.node_index)
 
     def mov_fork(self, world, direction):
-        keep_current = self._graph_loss >= self._forked_graph_loss
+        keep_current = self._graph_loss + direction >= (self._forked_graph_loss * 0.99)
         self.fork_graph(keep_current)
+        self.mov_node(world, 0)
+        return -.2
+
+    def mov_add_node(self, world, direction):
+        if len(world.graph.nodes) > 9:
+            return
+        last_prior = world.graph.prior_nodes[-1]
+        prev_dim = last_prior.out_dim
+        scale = lambda d, s=2: int( max(abs((direction + 1) / 2) * d * s, 1) )
+        if len(prev_dim) == 3:
+            wh = scale(prev_dim[1], s=.8)
+            out_dim = [scale(prev_dim[0]), wh, wh]
+        else:
+            out_dim = list(map(scale, prev_dim))
+        print('#'*20)
+        print('create node', out_dim)
+        world.graph.create_node(tuple(out_dim))
+        self.mov_node(world, 0)
+        return -.5
 
     def fork_graph(self, keep_current=False):
+        print('#'*20)
+        print('fork graph', keep_current)
         if keep_current:
             winner = self.graph
         else:

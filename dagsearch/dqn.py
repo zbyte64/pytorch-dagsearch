@@ -130,20 +130,20 @@ class Trainer(object):
 
                 # Select and perform an action
                 action = self.select_action(state)
-                a, d = torch.argmax(action[:-1]).item(), torch.sigmoid(action[-1]).item()
-                self.world.perform_action(a, d)
+                a, d = torch.argmax(action[:-1]).item(), torch.tanh(action[-1]).item()
+                reward_mod = self.world.perform_action(a, d)
 
                 forked_loss = criterion(torch.softmax(self.world.forked_graph(x), dim=1), _y)
                 graph_loss = criterion(torch.softmax(self.world.graph(x), dim=1), _y)
                 self.world.optimize(graph_loss, forked_loss)
 
-                reward = torch.FloatTensor([0.])
+                reward = torch.FloatTensor([reward_mod or 0.])
                 if last_loss is not None:
                     loss_delta = (last_loss - graph_loss)
-                    reward = (last_loss - graph_loss)
+                    reward = reward + loss_delta / last_loss
                 last_loss = graph_loss
                 print('Loss: %s , Reward: %s' % (graph_loss.item(), reward.item()))
-                reward = torch.sigmoid(torch.tensor([reward], device=device))
+                reward = torch.tanh(torch.tensor([reward], device=device))
 
                 next_state = torch.cat([self.world.observe(), torch.FloatTensor([loss_delta, self.world._graph_loss, self.world._forked_graph_loss])])
                 # Store the transition in memory

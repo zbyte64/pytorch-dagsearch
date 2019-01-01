@@ -22,9 +22,7 @@ def pad_to_match(x, out_shape):
         ph = dh // 2
         x = F.pad(x, (dw-pw, pw, dh-ph, ph))
     elif dh < 0:
-        #print('Warning, slicing down')
-        x = torch.narrow(x, 2, 0, x.shape[2] + dh)
-        x = torch.narrow(x, 3, 0, x.shape[3] + dw)
+        x = nn.functional.interpolate(x, out_shape[1:])
     return x
 
 
