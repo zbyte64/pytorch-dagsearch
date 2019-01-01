@@ -106,7 +106,7 @@ class Conv2dCell(BaseCell):
             out_dim[channel_dim-1],
             in_dim[channel_dim-1],
             self.max_kernel_size, self.max_kernel_size), requires_grad=True)
-        nn.init.xavier_uniform(self.weights)
+        nn.init.xavier_uniform_(self.weights)
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
@@ -174,7 +174,7 @@ class DeConv2dCell(BaseCell):
             in_dim[channel_dim-1],
             out_dim[channel_dim-1],
             self.max_kernel_size, self.max_kernel_size), requires_grad=True)
-        nn.init.xavier_uniform(self.weights)
+        nn.init.xavier_uniform_(self.weights)
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):

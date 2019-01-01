@@ -110,7 +110,7 @@ class Trainer(object):
         self.optimizer.step()
 
 
-    def train(self, dataset, epochs=5):
+    def train(self, dataset, epochs=50):
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
@@ -140,7 +140,7 @@ class Trainer(object):
                 reward = torch.FloatTensor([reward_mod or 0.])
                 if last_loss is not None:
                     loss_delta = (last_loss - graph_loss)
-                    reward = reward + loss_delta / last_loss
+                    reward = reward + (forked_loss - graph_loss) #/ loss_delta
                 last_loss = graph_loss
                 print('Loss: %s , Reward: %s' % (graph_loss.item(), reward.item()))
                 reward = torch.tanh(torch.tensor([reward], device=device))

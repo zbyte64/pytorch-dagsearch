@@ -55,7 +55,7 @@ class Node(nn.Module):
             [self.create_node_adapter(n) for n in self.in_nodes]
         )
 
-    def _register_input(self, in_node):
+    def _register_input(self, in_node, drop_out=None):
         self.in_nodes.append(in_node)
         adaptor = self.create_node_adapter(in_node)
         def init_weights(m):
@@ -64,6 +64,8 @@ class Node(nn.Module):
             if type(m) == nn.Conv2d:
                 nn.init.xavier_uniform(m.weight)
         adaptor.apply(init_weights)
+        if drop_out is not None:
+            adaptor = nn.Sequential(adaptor, nn.Dropout(drop_out))
         self.in_node_adapters.append(adaptor)
         self.muted_inputs = torch.ones(len(self.in_nodes))
         self.muted_inputs[-1] = -1
@@ -101,7 +103,7 @@ class Node(nn.Module):
             new_h = conv2d_size_out(in_node.out_dim[1], kernel_size, strides)
             new_volume = int(new_h) ** 2 * filters
             if new_volume:
-                return torch.nn.Sequential(
+                return nn.Sequential(
                     nn.Conv2d(in_node.out_dim[0], 1, kernel_size, strides),
                     View(new_volume),
                     nn.Linear(new_volume, self.in_volume),
@@ -109,7 +111,7 @@ class Node(nn.Module):
                     View(*self.in_dim)
                 )
 
-        return torch.nn.Sequential(
+        return nn.Sequential(
             View(in_node.out_volume),
             nn.Linear(in_node.out_volume, self.in_volume),
             nn.BatchNorm1d(self.in_volume),
@@ -206,8 +208,10 @@ class Graph(nn.Module):
         node = Node(in_nodes=in_nodes, in_dim=in_dim, out_dim=out_dim, channel_dim=self.channel_dim, cell_types=cell_types)
         self.prior_nodes.append(node)
         self.nodes.insert(-1, node)
-        #TODO priors get spiked with noise
-        self.output_node._register_input(node)
+        #priors get spiked with noise
+        p = max(.9 - len(self.prior_nodes) / 9, 0.)
+        print(p)
+        self.output_node._register_input(node, drop_out=p)
         return node
 
     def pop_last_node(self):
@@ -238,9 +242,13 @@ class Graph(nn.Module):
 class World(object):
     def __init__(self, graph):
         super(World, self).__init__()
-        self.graph = graph
-        self.forked_graph = graph.fork()
-        self.graph_optimizer = optim.SGD(graph.parameters(), lr=0.001, momentum=0.9)
+        self.initial_graph = graph
+        self.rebuild()
+
+    def rebuild(self):
+        self.graph = copy.deepcopy(self.initial_graph)
+        self.forked_graph = copy.deepcopy(self.initial_graph)
+        self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.001, momentum=0.9)
         self.graph_optimizer.zero_grad()
         self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.001, momentum=0.9)
         self.forked_graph_optimizer.zero_grad()
@@ -251,6 +259,8 @@ class World(object):
         self.cell_index = 0
         self.param_index = 0
         self.input_index = 0
+        self.gas = 1000000.
+        self.negative_entropy = 0.
 
     @property
     def current_node(self):
@@ -284,12 +294,14 @@ class World(object):
             assert False, 'This should happen when paging cells'
             self.param_index = 0
         _, p_min, p_max = self.current_cell.get_param_options()[self.param_index]
+        #TODO convey overall network shape
         nav_state = torch.FloatTensor([
             self.graph.in_volume / max_volume,
             self.graph.out_volume / max_volume,
             (param_state[self.param_index] - p_min) / p_max,
             cell_muted,
             input_muted,
+            self.gas,
             self.cooldown / 20,
             len(self.graph.nodes) / 10,
             self.node_index / len(self.graph.nodes),
@@ -347,11 +359,16 @@ class World(object):
     def mov_fork(self, world, direction):
         if self.cooldown:
             return
-        keep_current = self._graph_loss * ( (direction + 2) / 2) < (self._forked_graph_loss * 0.97)
+        #TODO compare accuracy with validation set?
+        #keep_current = self._graph_loss * ( (direction + 2) / 2) < (self._forked_graph_loss * 0.97)
+        keep_current = self._graph_loss < (self._forked_graph_loss * 0.9999)
+        reward = -1.
+        if keep_current:
+            reward = 1.
         self.fork_graph(keep_current)
         self.mov_node(world, 0)
         self.cooldown = 20
-        return -.2
+        return reward
 
     def mov_add_node(self, world, direction):
         if self.cooldown:
@@ -360,8 +377,8 @@ class World(object):
             return
         last_prior = world.graph.prior_nodes[-1]
         prev_dim = last_prior.out_dim
-        n = 3 * (direction + 1) / 4 + .5 #(.5, 2)
-        scale = lambda v: int(max(n * v, 1))
+        n = (direction + 1) * 3 + .1 #(.1, 3.1)
+        scale = lambda v: int(min(max(n * v, 1), 300))
         if len(prev_dim) == 3:
             wh = max(prev_dim[1] + int(direction*-2), 1)
             out_dim = [scale(prev_dim[0]), wh, wh]
@@ -377,7 +394,7 @@ class World(object):
         self.mov_node(world, 0)
         self.cooldown = 20
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.001, momentum=0.9)
-        return -len(world.graph.prior_nodes) / 10
+        #return -len(world.graph.prior_nodes) / 10 - n
 
     def mov_pop_node(self, world, direction):
         if self.cooldown:
@@ -390,7 +407,7 @@ class World(object):
         self.mov_node(world, 0)
         self.cooldown = 20
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.001, momentum=0.9)
-        return len(world.graph.prior_nodes) / 20
+        #return len(world.graph.prior_nodes) / 20
 
     def fork_graph(self, keep_current=False):
         print('#'*20)
@@ -415,6 +432,10 @@ class World(object):
         self.graph_optimizer.step()
         forked_loss.backward()
         self.forked_graph_optimizer.step()
+        #update energy
+        volume = sum(map(lambda x: np.prod(x.size()), self.graph.parameters()))
+        self.negative_entropy += np.log(volume)
+        self.gas -= volume * self._graph_loss
 
     def draw(self):
         G = nx.OrderedDiGraph()

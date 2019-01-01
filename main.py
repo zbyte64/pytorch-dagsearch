@@ -1,7 +1,8 @@
 from dagsearch.dag import Graph, World
 from dagsearch.cells import CELL_TYPES
-from dagsearch.dqn import Trainer
+from dagsearch.dag_env import DagSearchEnv
 from torchvision import datasets, transforms
+
 import networkx as nx
 import matplotlib.pyplot as plt
 
@@ -29,12 +30,16 @@ world = World(g)
 print(world.actions())
 print(world.observe())
 
-t = Trainer(world)
-try:
-    t.train(data_loader)
-finally:
-    g = world.draw()
-    labels=dict((n,'%s %s' % (n, ['%s: %s' % (k,v) for k, v in d.items()])) for n,d in g.nodes(data=True))
-    nx.draw(g, node_size=100, labels=labels)
-    #plt.subplot(400)
-    plt.show()
+env = DagSearchEnv(world, data_loader, nn.CrossEntropyLoss())
+
+
+for i_episode in range(20):
+    observation = env.reset()
+    for t in range(100):
+        env.render()
+        print(observation)
+        action = env.action_space.sample()
+        observation, reward, done, info = env.step(action)
+        if done:
+            print("Episode finished after {} timesteps".format(t+1))
+            break
