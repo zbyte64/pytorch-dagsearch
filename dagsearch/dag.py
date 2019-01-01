@@ -42,7 +42,9 @@ class Node(nn.Module):
         assert self.cells, str(_a)
         self.muted_cells = torch.ones(len(self.cells))
         self.muted_cells[random.randint(0, len(self.cells)-1)] = -1
-        self.muted_inputs = -torch.ones(len(in_nodes))
+        self.muted_inputs = torch.ones(len(in_nodes))
+        if in_nodes:
+            self.muted_inputs[-1] = -1
         self.in_dim = in_dim
         self.in_volume = np.prod(in_dim)
         self.out_dim = out_dim
@@ -63,7 +65,8 @@ class Node(nn.Module):
                 nn.init.xavier_uniform(m.weight)
         adaptor.apply(init_weights)
         self.in_node_adapters.append(adaptor)
-        self.muted_inputs = torch.cat([self.muted_inputs, -torch.ones(1)])
+        self.muted_inputs = torch.ones(len(self.in_nodes))
+        self.muted_inputs[-1] = -1
 
     def create_node_adapter(self, in_node):
         if in_node.out_dim == self.in_dim:
@@ -213,7 +216,8 @@ class Graph(nn.Module):
         self.nodes.pop(-2)
         self.output_node.in_nodes = list(self.prior_nodes)
         self.output_node.in_node_adapters = _s(self.output_node.in_node_adapters)
-        self.output_node.muted_inputs = -torch.ones(len(self.output_node.in_nodes))
+        self.output_node.muted_inputs = self.output_node.muted_inputs[:-1]
+        self.output_node.muted_inputs[-1] = -1
 
     def observe(self):
         return torch.FloatTensor([self.in_volume, self.out_volume, len(self.nodes)])
@@ -230,9 +234,6 @@ class Graph(nn.Module):
         x = self.output_node(outputs)
         return x
 
-    def fork(self):
-        return copy.deepcopy(self)
-
 
 class World(object):
     def __init__(self, graph):
@@ -240,9 +241,12 @@ class World(object):
         self.graph = graph
         self.forked_graph = graph.fork()
         self.graph_optimizer = optim.SGD(graph.parameters(), lr=0.001, momentum=0.9)
+        self.graph_optimizer.zero_grad()
         self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.001, momentum=0.9)
-        self._graph_loss = 1.0
-        self._forked_graph_loss = 1.0
+        self.forked_graph_optimizer.zero_grad()
+        self._graph_loss = 0.0
+        self._forked_graph_loss = 0.0
+        self.cooldown = 0
         self.node_index = 0
         self.cell_index = 0
         self.param_index = 0
@@ -265,7 +269,10 @@ class World(object):
 
     def observe(self):
         graph_state = self.graph.observe()
-        node_state = self.current_node.observe()
+        #reports visible node size
+        max_volume = max(self.graph.in_volume, self.graph.out_volume)
+        node_state = self.current_node.observe() / max_volume
+        #reports the type of cell (one hot)
         cell_state = self.current_cell.observe()
         cell_muted = self.current_node.muted_cells[self.cell_index]
         if self.input_index < len(self.current_node.muted_inputs):
@@ -278,9 +285,13 @@ class World(object):
             self.param_index = 0
         _, p_min, p_max = self.current_cell.get_param_options()[self.param_index]
         nav_state = torch.FloatTensor([
+            self.graph.in_volume / max_volume,
+            self.graph.out_volume / max_volume,
             (param_state[self.param_index] - p_min) / p_max,
             cell_muted,
             input_muted,
+            self.cooldown / 20,
+            len(self.graph.nodes) / 10,
             self.node_index / len(self.graph.nodes),
             self.cell_index / len(self.graph.cell_types),
             self.param_index / param_state.shape[0],
@@ -293,6 +304,8 @@ class World(object):
         action_idx: [0, n_actions]
         direction: [-1, 1]
         '''
+        if self.cooldown:
+            self.cooldown -= 1
         actions = self.actions()
         #print('Action:', actions[action_idx], direction)
         return actions[action_idx](self, direction)
@@ -332,36 +345,52 @@ class World(object):
         self.input_index = self._move(self.input_index, direction, 0, self.node_index)
 
     def mov_fork(self, world, direction):
-        keep_current = self._graph_loss * (direction + 1 / 2) < (self._forked_graph_loss * 0.99)
+        if self.cooldown:
+            return
+        keep_current = self._graph_loss * ( (direction + 2) / 2) < (self._forked_graph_loss * 0.97)
         self.fork_graph(keep_current)
         self.mov_node(world, 0)
+        self.cooldown = 20
         return -.2
 
     def mov_add_node(self, world, direction):
+        if self.cooldown:
+            return
         if len(world.graph.nodes) > 9:
             return
         last_prior = world.graph.prior_nodes[-1]
         prev_dim = last_prior.out_dim
-        scale = lambda d, s=2: int( max(abs((direction + 1) / 2) * d * s, 1) )
+        n = 3 * (direction + 1) / 4 + .5 #(.5, 2)
+        scale = lambda v: int(max(n * v, 1))
         if len(prev_dim) == 3:
-            wh = scale(prev_dim[1], s=.8)
+            wh = max(prev_dim[1] + int(direction*-2), 1)
             out_dim = [scale(prev_dim[0]), wh, wh]
         else:
             out_dim = list(map(scale, prev_dim))
         print('#'*20)
-        print('create node', out_dim)
-        world.graph.create_node(tuple(out_dim))
+        print('create node', out_dim, n)
+        try:
+            world.graph.create_node(tuple(out_dim))
+        except AssertionError as e:
+            print(e)
+            return -.1
         self.mov_node(world, 0)
-        return -.5
+        self.cooldown = 20
+        self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.001, momentum=0.9)
+        return -len(world.graph.prior_nodes) / 10
 
     def mov_pop_node(self, world, direction):
+        if self.cooldown:
+            return
         if len(world.graph.prior_nodes) < 2:
             return
         print('#'*20)
         print('pop last node')
         world.graph.pop_last_node()
         self.mov_node(world, 0)
-        return .5
+        self.cooldown = 20
+        self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.001, momentum=0.9)
+        return len(world.graph.prior_nodes) / 20
 
     def fork_graph(self, keep_current=False):
         print('#'*20)
@@ -372,19 +401,23 @@ class World(object):
             winner = self.forked_graph
             self.graph_optimizer = self.forked_graph_optimizer
         self.graph = winner
-        self.forked_graph = winner.fork()
+        self.forked_graph = copy.deepcopy(winner)
         self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.001, momentum=0.9)
+        #copy gradients?
+        self.forked_graph_optimizer.load_state_dict(self.graph_optimizer.state_dict())
+        self._forked_graph_loss = 0.0
+        self._graph_loss = 0.0
 
     def optimize(self, graph_loss, forked_loss):
-        self._graph_loss = graph_loss.item()
-        self._forked_graph_loss = forked_loss.item()
+        self._graph_loss += graph_loss.item()
+        self._forked_graph_loss += forked_loss.item()
         graph_loss.backward()
         self.graph_optimizer.step()
         forked_loss.backward()
         self.forked_graph_optimizer.step()
 
     def draw(self):
-        G = nx.Graph()
+        G = nx.OrderedDiGraph()
         for ni, node in enumerate(self.graph.nodes):
             in_node_n = 'node_%s_input' % ni
             out_node_n = 'node_%s_output' % ni

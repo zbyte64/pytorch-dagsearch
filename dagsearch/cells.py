@@ -110,7 +110,7 @@ class Conv2dCell(BaseCell):
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
-        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] <= out_dim[0]
+        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] <= out_dim[0] and in_dim[1] >= out_dim[1]
 
     def get_param_options(self):
         max_stride = max(self.in_dim[1] // self.out_dim[1], 1)
@@ -178,7 +178,7 @@ class DeConv2dCell(BaseCell):
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
-        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] > out_dim[0]
+        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] > out_dim[0] and in_dim[1] <= out_dim[1]
 
     def get_param_options(self):
         return [
