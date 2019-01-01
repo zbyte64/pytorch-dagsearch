@@ -1,5 +1,4 @@
 from gym import Env, spaces
-from torch import nn
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -8,7 +7,7 @@ import matplotlib.pyplot as plt
 class DagSearchEnv(Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, world, data_loader, loss_fn=nn.MSELoss):
+    def __init__(self, world, data_loader, loss_fn):
         self.world = world
         self.data_loader = data_loader
         self.criterion = loss_fn
@@ -16,7 +15,7 @@ class DagSearchEnv(Env):
             spaces.Discrete(len(world.actions())),
             spaces.Box(low=-1., high=-1, shape=(2,), dtype=np.float32)
         ))
-        self.observations_space = spaces.Discrete(world.observe().shape[0])
+        self.observation_space = spaces.Discrete(world.observe().shape[0])
 
     def next_batch(self):
         if not hasattr(self, '_ds_iter'):
@@ -30,9 +29,8 @@ class DagSearchEnv(Env):
     def train(self, iterations=1):
         f_loss = 0.
         g_loss = 0.
-        while iterations > 0:
+        for i in range(iterations):
             batch = self.next_batch()
-            iterations -= 1
             x, y = batch
             forked_loss = self.criterion(self.world.forked_graph(x), y)
             graph_loss = self.criterion(self.world.graph(x), y)
@@ -72,7 +70,7 @@ class DagSearchEnv(Env):
                  use this for learning.
         """
         reward = self._reward(action)
-        ob = self._observe()
+        ob = self.observe()
         episode_over = self.world.gas <= 0
         return ob, reward, episode_over, {}
 
@@ -80,7 +78,7 @@ class DagSearchEnv(Env):
         self.world.rebuild()
         return self._observe()
 
-    def _observe(self):
+    def observe(self):
         return self.world.observe()
 
     def render(self, mode='human', close=False):
@@ -95,6 +93,8 @@ class DagSearchEnv(Env):
 
     def _reward(self, action):
         (a, d) = action
-        a = self.world.perform_action(a, d[0]) or 0.
+        #TODO two direction support
+        d = d[0]
+        r = self.world.perform_action(a, d) or 0.
         graph_loss, forked_loss = self.train()
-        return a + (forked_loss - graph_loss)
+        return r + (forked_loss - graph_loss)

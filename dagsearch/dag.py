@@ -240,9 +240,10 @@ class Graph(nn.Module):
 
 
 class World(object):
-    def __init__(self, graph):
+    def __init__(self, graph, initial_gas=10**6):
         super(World, self).__init__()
         self.initial_graph = graph
+        self.initial_gas = initial_gas
         self.rebuild()
 
     def rebuild(self):
@@ -259,7 +260,7 @@ class World(object):
         self.cell_index = 0
         self.param_index = 0
         self.input_index = 0
-        self.gas = 1000000.
+        self.gas = self.initial_gas
         self.negative_entropy = 0.
 
     @property
@@ -301,7 +302,7 @@ class World(object):
             (param_state[self.param_index] - p_min) / p_max,
             cell_muted,
             input_muted,
-            self.gas,
+            self.gas / self.initial_gas,
             self.cooldown / 20,
             len(self.graph.nodes) / 10,
             self.node_index / len(self.graph.nodes),

@@ -62,10 +62,11 @@ EPS_DECAY = 200
 TARGET_UPDATE = 10
 
 class Trainer(object):
-    def __init__(self, world):
+    def __init__(self, world, env):
         self.world = world
-        self.world_size = world.observe().shape[0] + 3 #add last loss delta, loss, forked_loss
-        self.action_size = world.actions_shape()[0]
+        self.env = env
+        self.world_size = world.observe().shape[0]
+        self.action_size = len(world.actions()) + 2
         self.policy_net = DQN(self.world_size, self.action_size)
         self.target_net = DQN(self.world_size, self.action_size)
         self.memory = ReplayMemory(10000)
@@ -79,9 +80,10 @@ class Trainer(object):
         self.steps_done += 1
         if sample > eps_threshold:
             with torch.no_grad():
-                return self.policy_net(state)
+                y = self.policy_net(state)
+                return (torch.argmax(y[:-2]), y[-2:])
         else:
-            return torch.normal(torch.zeros(self.action_size)).to(device)
+            return self.env.action_space.sample()
 
     def optimize_trainer_model(self):
         if len(self.memory) < BATCH_SIZE:
@@ -91,11 +93,19 @@ class Trainer(object):
         # detailed explanation). This converts batch-array of Transitions
         # to Transition of batch-arrays.
         batch = Transition(*zip(*transitions))
+        # Compute a mask of non-final states and concatenate the batch elements
+        # (a final state would've been the one after which simulation ended)
+        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
+                                              batch.next_state)), device=device, dtype=torch.uint8)
+        non_final_next_states = torch.cat([s for s in batch.next_state
+                                                    if s is not None])
         state_batch = torch.stack(batch.state)
         action_batch = torch.stack(batch.action)
         reward_batch = torch.stack(batch.reward)
-        state_action_values = self.policy_net(state_batch)
-        next_state_values = self.target_net(state_batch)
+        state_action_values = self.policy_net(state_batch).gather(1, action_batch)
+
+        next_state_values = torch.zeros(BATCH_SIZE)
+        next_state_values[non_final_mask] = self.target_net(non_final_next_state)
         # Compute the expected Q values
         expected_state_action_values = (next_state_values * GAMMA) + reward_batch
 
@@ -110,48 +120,22 @@ class Trainer(object):
         self.optimizer.step()
 
 
-    def train(self, dataset, epochs=50):
+    def train(self, iterations=1000):
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
-        criterion = nn.MSELoss()
+        state = self.env.observe()
+        for i in range(iterations):
+            # Select and perform an action
+            action = self.select_action(state)
+            ob, reward, episode_over, info = self.env.step(action)
+            next_state = ob
+            # Store the transition in memory
+            self.memory.push(state, action, next_state, reward)
+            state = next_state
 
-        def make_one_hot(labels, num_classes):
-            y = torch.eye(num_classes)
-            return y[labels]
-
-        loss_delta = 0.0
-        last_loss = None
-        state = torch.cat([self.world.observe(), torch.FloatTensor([loss_delta, self.world._graph_loss, self.world._forked_graph_loss])])
-        for e in range(epochs):
-            for i, batch in enumerate(dataset):
-                x, y = batch
-                _y = make_one_hot(y, 10) #TODO generalize training
-
-                # Select and perform an action
-                action = self.select_action(state)
-                a, d = torch.argmax(action[:-1]).item(), torch.tanh(action[-1]).item()
-                reward_mod = self.world.perform_action(a, d)
-
-                forked_loss = criterion(torch.softmax(self.world.forked_graph(x), dim=1), _y)
-                graph_loss = criterion(torch.softmax(self.world.graph(x), dim=1), _y)
-                self.world.optimize(graph_loss, forked_loss)
-
-                reward = torch.FloatTensor([reward_mod or 0.])
-                if last_loss is not None:
-                    loss_delta = (last_loss - graph_loss)
-                    reward = reward + (forked_loss - graph_loss) #/ loss_delta
-                last_loss = graph_loss
-                print('Loss: %s , Reward: %s' % (graph_loss.item(), reward.item()))
-                reward = torch.tanh(torch.tensor([reward], device=device))
-
-                next_state = torch.cat([self.world.observe(), torch.FloatTensor([loss_delta, self.world._graph_loss, self.world._forked_graph_loss])])
-                # Store the transition in memory
-                self.memory.push(state, action, next_state, reward)
-                state = next_state
-
-                # Perform one step of the optimization (on the target network)
-                self.optimize_trainer_model()
-                # Update the target network, copying all weights and biases in DQN
-                if i % TARGET_UPDATE == 0:
-                    self.target_net.load_state_dict(self.policy_net.state_dict())
+            # Perform one step of the optimization (on the target network)
+            self.optimize_trainer_model()
+            # Update the target network, copying all weights and biases in DQN
+            if i % TARGET_UPDATE == 0:
+                self.target_net.load_state_dict(self.policy_net.state_dict())
