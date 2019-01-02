@@ -62,7 +62,7 @@ class BaseCell(nn.Module):
         return {k: float(self.param_state[i]) for i, (k, _n, _x) in enumerate(self.get_param_options())}
 
     def actions(self):
-        return [self.toggle_param]
+        return [self.mov_param_down, self.mov_param_up]
 
     def toggle_param(self, world, direction):
         options = self.get_param_options()
@@ -71,6 +71,12 @@ class BaseCell(nn.Module):
         v = self.param_state[param_index] + direction
         v = max(min(v, _max), _min)
         self.param_state[param_index] = v
+
+    def mov_param_down(self, world):
+        self.toggle_param(world, -1)
+
+    def mov_param_up(self, world):
+        self.toggle_param(world, 1)
 
 
 @register_cell

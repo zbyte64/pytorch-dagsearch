@@ -11,10 +11,7 @@ class DagSearchEnv(Env):
         self.world = world
         self.data_loader = data_loader
         self.criterion = loss_fn
-        self.action_space = spaces.Tuple((
-            spaces.Discrete(len(world.actions())),
-            spaces.Box(low=-1., high=-1, shape=(2,), dtype=np.float32)
-        ))
+        self.action_space = spaces.Discrete(len(world.actions()))
         self.observation_space = spaces.Discrete(world.observe().shape[0])
 
     def next_batch(self):
@@ -35,8 +32,8 @@ class DagSearchEnv(Env):
             forked_loss = self.criterion(self.world.forked_graph(x), y)
             graph_loss = self.criterion(self.world.graph(x), y)
             self.world.optimize(graph_loss, forked_loss)
-            f_loss += forked_loss
-            g_loss += graph_loss
+            f_loss += forked_loss.detach()
+            g_loss += graph_loss.detach()
         return (g_loss, f_loss)
 
 
@@ -79,7 +76,7 @@ class DagSearchEnv(Env):
         return self._observe()
 
     def observe(self):
-        return self.world.observe()
+        return self.world.observe().view(1, -1)
 
     def render(self, mode='human', close=False):
         if close: return
@@ -92,9 +89,6 @@ class DagSearchEnv(Env):
         return g
 
     def _reward(self, action):
-        (a, d) = action
-        #TODO two direction support
-        d = d[0]
-        r = self.world.perform_action(a, d) or 0.
+        r = self.world.perform_action(action) or 0.
         graph_loss, forked_loss = self.train()
         return r + (forked_loss - graph_loss)

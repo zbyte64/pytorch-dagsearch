@@ -6,6 +6,7 @@ import numpy as np
 import random
 import networkx as nx
 import copy
+from functools import lru_cache, partial
 
 
 flatten = lambda x: x.view(x.shape[0], -1)
@@ -164,13 +165,13 @@ class Node(nn.Module):
     def actions(self):
         return [self.toggle_cell, self.toggle_input]
 
-    def toggle_cell(self, world, direction):
+    def toggle_cell(self, world):
         cell_index = world.cell_index
         if cell_index < len(self.muted_cells):
             self.muted_cells = torch.ones_like(self.muted_cells)
             self.muted_cells[cell_index] = -1
 
-    def toggle_input(self, world, direction):
+    def toggle_input(self, world):
         index = world.input_index
         if index < len(self.muted_inputs):
             self.muted_inputs = torch.ones_like(self.muted_inputs)
@@ -312,7 +313,7 @@ class World(object):
         ])
         return torch.cat([nav_state, graph_state, node_state, cell_state])
 
-    def perform_action(self, action_idx, direction):
+    def perform_action(self, action_idx):
         '''
         action_idx: [0, n_actions]
         direction: [-1, 1]
@@ -321,14 +322,22 @@ class World(object):
             self.cooldown -= 1
         actions = self.actions()
         #print('Action:', actions[action_idx], direction)
-        return actions[action_idx](self, direction)
+        return actions[action_idx](self)
 
     def actions_shape(self):
         actions = self.actions()
-        return (len(actions) + 1, )
+        return (len(actions), )
+
+    @lru_cache()
+    def nav_actions(self):
+        a = [self.mov_fork] #self.mov_pop_node
+        for f in [self.page_node, self.page_cell, self.page_param, self.page_input]:
+            a.append(partial(f, direction=-1))
+            a.append(partial(f, direction=1))
+        return a
 
     def actions(self):
-        nav_actions = [self.mov_node, self.mov_cell, self.mov_param, self.mov_input, self.mov_fork, self.mov_add_node, self.mov_pop_node]
+        nav_actions = self.nav_actions()
         actions = nav_actions + self.current_node.actions() + self.current_cell.actions()
         return actions
 
@@ -340,24 +349,24 @@ class World(object):
             v = _min
         return v
 
-    def mov_node(self, world, direction):
+    def page_node(self, world, direction):
         self.node_index = self._move(self.node_index, direction, 0, len(self.graph.nodes)-1)
         #ensure input is less or equal to node index
-        self.mov_input(world, 0)
-        self.mov_cell(world, 0)
+        self.page_input(world, 0)
+        self.page_cell(world, 0)
 
-    def mov_cell(self, world, direction):
+    def page_cell(self, world, direction):
         self.cell_index = self._move(self.cell_index, direction, 0, len(self.graph.cell_types)-1)
         #refresh param position
-        self.mov_param(world, 0)
+        self.page_param(world, 0)
 
-    def mov_param(self, world, direction):
+    def page_param(self, world, direction):
         self.param_index = self._move(self.param_index, direction, 0, self.current_cell.param_state.shape[0]-1)
 
-    def mov_input(self, world, direction):
+    def page_input(self, world, direction):
         self.input_index = self._move(self.input_index, direction, 0, self.node_index)
 
-    def mov_fork(self, world, direction):
+    def mov_fork(self, world):
         if self.cooldown:
             return
         #TODO compare accuracy with validation set?
@@ -367,11 +376,11 @@ class World(object):
         if keep_current:
             reward = 1.
         self.fork_graph(keep_current)
-        self.mov_node(world, 0)
+        self.page_node(world, 0)
         self.cooldown = 20
         return reward
 
-    def mov_add_node(self, world, direction):
+    def add_node(self, world, direction):
         if self.cooldown:
             return
         if len(world.graph.nodes) > 9:
@@ -392,12 +401,12 @@ class World(object):
         except AssertionError as e:
             print(e)
             return -.1
-        self.mov_node(world, 0)
+        self.page_node(world, 0)
         self.cooldown = 20
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.001, momentum=0.9)
         #return -len(world.graph.prior_nodes) / 10 - n
 
-    def mov_pop_node(self, world, direction):
+    def mov_pop_node(self, world):
         if self.cooldown:
             return
         if len(world.graph.prior_nodes) < 2:

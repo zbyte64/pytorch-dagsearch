@@ -66,11 +66,12 @@ class Trainer(object):
         self.world = world
         self.env = env
         self.world_size = world.observe().shape[0]
-        self.action_size = len(world.actions()) + 2
+        self.action_size = len(world.actions())
         self.policy_net = DQN(self.world_size, self.action_size)
         self.target_net = DQN(self.world_size, self.action_size)
         self.memory = ReplayMemory(10000)
         self.optimizer = optim.RMSprop(self.policy_net.parameters())
+        self.optimizer.zero_grad()
         self.steps_done = 0
 
     def select_action(self, state):
@@ -80,10 +81,10 @@ class Trainer(object):
         self.steps_done += 1
         if sample > eps_threshold:
             with torch.no_grad():
-                y = self.policy_net(state)
-                return (torch.argmax(y[:-2]), y[-2:])
+                return self.policy_net(state).max(1, keepdim=True)[1]
         else:
-            return self.env.action_space.sample()
+            return torch.from_numpy(np.array([[self.env.action_space.sample()]]))
+
 
     def optimize_trainer_model(self):
         if len(self.memory) < BATCH_SIZE:
@@ -99,18 +100,21 @@ class Trainer(object):
                                               batch.next_state)), device=device, dtype=torch.uint8)
         non_final_next_states = torch.cat([s for s in batch.next_state
                                                     if s is not None])
-        state_batch = torch.stack(batch.state)
-        action_batch = torch.stack(batch.action)
+        state_batch = torch.cat(batch.state)
+        action_batch = torch.cat(batch.action)
         reward_batch = torch.stack(batch.reward)
+        print(state_batch.shape, action_batch.shape)
+        #print(action_batch)
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
 
         next_state_values = torch.zeros(BATCH_SIZE)
-        next_state_values[non_final_mask] = self.target_net(non_final_next_state)
+        next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1)[0].detach()
         # Compute the expected Q values
         expected_state_action_values = (next_state_values * GAMMA) + reward_batch
 
         # Compute Huber loss
-        loss = F.smooth_l1_loss(state_action_values, expected_state_action_values)#.unsqueeze(1))
+        print(state_action_values.shape, expected_state_action_values.shape)
+        loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
 
         # Optimize the model
         self.optimizer.zero_grad()
@@ -123,12 +127,14 @@ class Trainer(object):
     def train(self, iterations=1000):
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
+        self.optimizer.zero_grad()
 
         state = self.env.observe()
         for i in range(iterations):
             # Select and perform an action
             action = self.select_action(state)
-            ob, reward, episode_over, info = self.env.step(action)
+            print(action)
+            ob, reward, episode_over, info = self.env.step(action.item())
             next_state = ob
             # Store the transition in memory
             self.memory.push(state, action, next_state, reward)

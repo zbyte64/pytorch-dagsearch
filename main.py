@@ -26,6 +26,9 @@ data_loader = torch.utils.data.DataLoader(data,
 
 g = Graph(cell_types, in_dim, out_dim)
 g.create_node((4, 28, 28))
+g.create_node((4, 28, 28))
+g.create_node((8, 20, 20))
+g.create_node((18, 8, 8))
 world = World(g)
 
 print(world.actions())
@@ -33,5 +36,5 @@ print(world.observe())
 
 env = DagSearchEnv(world, data_loader, nn.CrossEntropyLoss())
 trainer = Trainer(world, env)
-trainer.train(100)
+trainer.train(1000)
 env.render()
