@@ -2,6 +2,7 @@ from gym import Env, spaces
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
+import time
 
 
 class DagSearchEnv(Env):
@@ -13,6 +14,7 @@ class DagSearchEnv(Env):
         self.criterion = loss_fn
         self.action_space = spaces.Discrete(len(world.actions()))
         self.observation_space = spaces.Discrete(world.observe().shape[0])
+        self._last_loss = None
 
     def next_batch(self):
         if not hasattr(self, '_ds_iter'):
@@ -30,10 +32,13 @@ class DagSearchEnv(Env):
             batch = self.next_batch()
             x, y = batch
             forked_loss = self.criterion(self.world.forked_graph(x), y)
+            g = - time.time()
             graph_loss = self.criterion(self.world.graph(x), y)
+            g += time.time()
             self.world.optimize(graph_loss, forked_loss)
             f_loss += forked_loss.detach()
             g_loss += graph_loss.detach()
+            self.world.gas -= g
         return (g_loss, f_loss)
 
 
@@ -73,6 +78,7 @@ class DagSearchEnv(Env):
 
     def reset(self):
         self.world.rebuild()
+        self._last_loss = None
         return self._observe()
 
     def observe(self):
@@ -91,4 +97,8 @@ class DagSearchEnv(Env):
     def _reward(self, action):
         r = self.world.perform_action(action) or 0.
         graph_loss, forked_loss = self.train()
-        return r + (forked_loss - graph_loss)
+        delta_loss = 0.
+        if self._last_loss is not None:
+            delta_loss = self._last_loss - graph_loss
+        self._last_loss = graph_loss
+        return r + (forked_loss - graph_loss) + delta_loss

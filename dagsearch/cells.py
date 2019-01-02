@@ -49,6 +49,9 @@ class BaseCell(nn.Module):
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
+        '''
+        Return whether the args are a valid cell size
+        '''
         return True
 
     def observe(self):
@@ -56,27 +59,22 @@ class BaseCell(nn.Module):
         return make_one_hot(idx, len(CELL_TYPES))
 
     def get_param_options(self):
+        '''
+        Return a list of a triples desribing the params and their ranges.
+        '''
         return [] #('name', min, max))
 
     def get_param_dict(self):
         return {k: float(self.param_state[i]) for i, (k, _n, _x) in enumerate(self.get_param_options())}
 
     def actions(self):
-        return [self.mov_param_down, self.mov_param_up]
+        return [self.mov_scramble]
 
-    def toggle_param(self, world, direction):
-        options = self.get_param_options()
-        param_index = world.param_index
-        (option_name, _min, _max) = options[param_index]
-        v = self.param_state[param_index] + direction
-        v = max(min(v, _max), _min)
-        self.param_state[param_index] = v
-
-    def mov_param_down(self, world):
-        self.toggle_param(world, -1)
-
-    def mov_param_up(self, world):
-        self.toggle_param(world, 1)
+    def mov_scramble(self, world):
+        '''
+        Randomize the weights
+        '''
+        pass
 
 
 @register_cell

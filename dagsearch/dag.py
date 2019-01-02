@@ -241,7 +241,7 @@ class Graph(nn.Module):
 
 
 class World(object):
-    def __init__(self, graph, initial_gas=10**6):
+    def __init__(self, graph, initial_gas=600):
         super(World, self).__init__()
         self.initial_graph = graph
         self.initial_gas = initial_gas
@@ -261,6 +261,7 @@ class World(object):
         self.cell_index = 0
         self.param_index = 0
         self.input_index = 0
+        self.param_state = torch.zeros(2)
         self.gas = self.initial_gas
         self.negative_entropy = 0.
 
@@ -279,6 +280,17 @@ class World(object):
     def current_input(self):
         return self.graph.nodes[self.input_index]
 
+    def get_param_options(self):
+        options = [
+            ('new_cell_scale1', -4, 4),
+            ('new_cell_scale2', -4, 4),
+        ]
+        options.extend(self.current_cell.get_param_options())
+        return options
+
+    def get_param_state(self):
+        return torch.cat((self.param_state, self.current_cell.param_state))
+
     def observe(self):
         graph_state = self.graph.observe()
         #reports visible node size
@@ -291,11 +303,11 @@ class World(object):
             input_muted = self.current_node.is_input_muted(self.input_index)
         else:
             input_muted = 0.
-        param_state = self.current_cell.param_state
+        param_state = self.get_param_state()
         if self.param_index >= param_state.shape[0]:
             assert False, 'This should happen when paging cells'
             self.param_index = 0
-        _, p_min, p_max = self.current_cell.get_param_options()[self.param_index]
+        _, p_min, p_max = self.get_param_options()[self.param_index]
         #TODO convey overall network shape
         nav_state = torch.FloatTensor([
             self.graph.in_volume / max_volume,
@@ -311,7 +323,7 @@ class World(object):
             self.param_index / param_state.shape[0],
             self.input_index / len(self.graph.nodes),
         ])
-        return torch.cat([nav_state, graph_state, node_state, cell_state])
+        return torch.cat([nav_state, graph_state, node_state, cell_state]).detach()
 
     def perform_action(self, action_idx):
         '''
@@ -330,7 +342,7 @@ class World(object):
 
     @lru_cache()
     def nav_actions(self):
-        a = [self.mov_fork] #self.mov_pop_node
+        a = [self.mov_fork, self.mov_param_up, self.mov_param_down, self.mov_pop_node, self.mov_add_node]
         for f in [self.page_node, self.page_cell, self.page_param, self.page_input]:
             a.append(partial(f, direction=-1))
             a.append(partial(f, direction=1))
@@ -361,10 +373,32 @@ class World(object):
         self.page_param(world, 0)
 
     def page_param(self, world, direction):
-        self.param_index = self._move(self.param_index, direction, 0, self.current_cell.param_state.shape[0]-1)
+        o = self.get_param_options()
+        self.param_index = self._move(self.param_index, direction, 0, len(o)-1)
 
     def page_input(self, world, direction):
         self.input_index = self._move(self.input_index, direction, 0, self.node_index)
+
+    def toggle_param(self, world, direction):
+        param_index = world.param_index
+        options = self.get_param_options()
+        (option_name, _min, _max) = options[param_index]
+        _c = self.param_state.shape[0]
+        if param_index >= _c:
+            param_index -= _c
+            v = self.current_cell.param_state[param_index] + direction
+            v = max(min(v, _max), _min)
+            self.current_cell.param_state[param_index] = v
+        else:
+            v = self.param_state[param_index] + direction
+            v = max(min(v, _max), _min)
+            self.param_state[param_index] = v
+
+    def mov_param_down(self, world):
+        self.toggle_param(world, -1)
+
+    def mov_param_up(self, world):
+        self.toggle_param(world, 1)
 
     def mov_fork(self, world):
         if self.cooldown:
@@ -380,17 +414,19 @@ class World(object):
         self.cooldown = 20
         return reward
 
-    def add_node(self, world, direction):
+    def mov_add_node(self, world):
         if self.cooldown:
             return
         if len(world.graph.nodes) > 9:
             return
         last_prior = world.graph.prior_nodes[-1]
         prev_dim = last_prior.out_dim
-        n = (direction + 1) * 3 + .1 #(.1, 3.1)
+        s1 = world.param_state[0]
+        s2 = world.param_state[1]
+        n = (s1 + 4) / 8 + .1 #(.1, 3.1)
         scale = lambda v: int(min(max(n * v, 1), 300))
         if len(prev_dim) == 3:
-            wh = max(prev_dim[1] + int(direction*-2), 1)
+            wh = int(max(prev_dim[1] + s2, 1))
             out_dim = [scale(prev_dim[0]), wh, wh]
         else:
             out_dim = list(map(scale, prev_dim))
@@ -414,7 +450,7 @@ class World(object):
         print('#'*20)
         print('pop last node')
         world.graph.pop_last_node()
-        self.mov_node(world, 0)
+        self.page_node(world, 0)
         self.cooldown = 20
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.001, momentum=0.9)
         #return len(world.graph.prior_nodes) / 20
@@ -445,7 +481,6 @@ class World(object):
         #update energy
         volume = sum(map(lambda x: np.prod(x.size()), self.graph.parameters()))
         self.negative_entropy += np.log(volume)
-        self.gas -= volume * self._graph_loss
 
     def draw(self):
         G = nx.OrderedDiGraph()

@@ -103,7 +103,7 @@ class Trainer(object):
         state_batch = torch.cat(batch.state)
         action_batch = torch.cat(batch.action)
         reward_batch = torch.stack(batch.reward)
-        print(state_batch.shape, action_batch.shape)
+        #print(state_batch.shape, action_batch.shape)
         #print(action_batch)
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
 
@@ -113,7 +113,7 @@ class Trainer(object):
         expected_state_action_values = (next_state_values * GAMMA) + reward_batch
 
         # Compute Huber loss
-        print(state_action_values.shape, expected_state_action_values.shape)
+        #print(state_action_values.shape, expected_state_action_values.shape)
         loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
 
         # Optimize the model

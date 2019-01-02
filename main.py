@@ -36,5 +36,5 @@ print(world.observe())
 
 env = DagSearchEnv(world, data_loader, nn.CrossEntropyLoss())
 trainer = Trainer(world, env)
-trainer.train(1000)
+trainer.train(10000)
 env.render()
