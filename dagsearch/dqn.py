@@ -5,6 +5,7 @@ import random
 import numpy as np
 from collections import namedtuple
 from itertools import count
+import heapq
 
 import torch
 import torch.nn as nn
@@ -73,6 +74,7 @@ class Trainer(object):
         self.optimizer = optim.RMSprop(self.policy_net.parameters())
         self.optimizer.zero_grad()
         self.steps_done = 0
+        self.score_board = []
 
     def select_action(self, state):
         sample = random.random()
@@ -102,7 +104,7 @@ class Trainer(object):
                                                     if s is not None])
         state_batch = torch.cat(batch.state)
         action_batch = torch.cat(batch.action)
-        reward_batch = torch.stack(batch.reward)
+        reward_batch = torch.from_numpy(np.array(batch.reward, dtype=np.float32))
         #print(state_batch.shape, action_batch.shape)
         #print(action_batch)
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
@@ -133,8 +135,12 @@ class Trainer(object):
         for i in range(iterations):
             # Select and perform an action
             action = self.select_action(state)
-            print(action)
             ob, reward, episode_over, info = self.env.step(action.item())
+            if episode_over:
+                print('episode over')
+            else:
+                print('Reward %.2f , Loss %.2f ' % (reward, info['loss']))
+            #print(action.item(), reward, episode_over, info)
             next_state = ob
             # Store the transition in memory
             self.memory.push(state, action, next_state, reward)
@@ -145,3 +151,14 @@ class Trainer(object):
             # Update the target network, copying all weights and biases in DQN
             if i % TARGET_UPDATE == 0:
                 self.target_net.load_state_dict(self.policy_net.state_dict())
+            if episode_over:
+                #TODO record score
+                self.env.reset()
+
+    def score_model(self):
+        self.world.mov_fork(self.world)
+        valid_data = next(self.world.valid_data)
+        x, y = valid_data
+        py = self.world.graph(x)
+        loss = self.world.criterion(y, py)
+        heapq.heappush(self.score_board, (loss, self.world.graph))

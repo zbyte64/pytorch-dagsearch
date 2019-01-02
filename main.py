@@ -1,4 +1,5 @@
-from dagsearch.dag import Graph, World
+from dagsearch.dag import Graph
+from dagsearch.world import World
 from dagsearch.cells import CELL_TYPES
 from dagsearch.dag_env import DagSearchEnv
 from dagsearch.dqn import Trainer
@@ -19,8 +20,12 @@ batch_size = 32
 final_image_transform = transforms.Compose([
     transforms.ToTensor(),
 ])
-data = datasets.MNIST('./MNIST', download=True, transform=final_image_transform)
+data = datasets.MNIST('./MNIST', download=True, transform=final_image_transform, train=True)
 data_loader = torch.utils.data.DataLoader(data,
+                                          batch_size=batch_size,
+                                          shuffle=True,)
+validata = datasets.MNIST('./MNIST', download=True, transform=final_image_transform, train=False)
+validata_loader = torch.utils.data.DataLoader(validata,
                                           batch_size=batch_size,
                                           shuffle=True,)
 
@@ -29,12 +34,13 @@ g.create_node((4, 28, 28))
 g.create_node((4, 28, 28))
 g.create_node((8, 20, 20))
 g.create_node((18, 8, 8))
-world = World(g)
+world = World(g, data_loader, validata_loader, nn.CrossEntropyLoss(), initial_gas=300)
 
 print(world.actions())
 print(world.observe())
 
-env = DagSearchEnv(world, data_loader, nn.CrossEntropyLoss())
+env = DagSearchEnv(world)
 trainer = Trainer(world, env)
 trainer.train(10000)
 env.render()
+print(trainer.score_board)
