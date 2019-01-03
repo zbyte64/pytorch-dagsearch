@@ -258,27 +258,28 @@ class World(object):
         self._forked_graph_loss = 0.0
         self._graph_loss = 0.0
 
-    def optimize(self, graph_loss, forked_loss):
-        self._graph_loss += graph_loss.item()
-        self._forked_graph_loss += forked_loss.item()
-        graph_loss.backward()
-        self.graph_optimizer.step()
-        forked_loss.backward()
-        self.forked_graph_optimizer.step()
-        #update energy
-        volume = sum(map(lambda x: np.prod(x.size()), self.graph.parameters()))
-        self.negative_entropy += np.log(volume)
-
     def train(self, iterations=1):
         f_loss = 0.
         g_loss = 0.
         for i in range(iterations):
             x, y = next(self.test_data)
-            forked_loss = self.criterion(self.forked_graph(x), y)
-            g = - time.time()
+
+            g = -time.time()
             graph_loss = self.criterion(self.graph(x), y)
+            graph_loss.backward()
+            self.graph_optimizer.step()
             g += time.time()
-            self.optimize(graph_loss, forked_loss)
+
+            forked_loss = self.criterion(self.forked_graph(x), y)
+            forked_loss.backward()
+            self.forked_graph_optimizer.step()
+
+            self._graph_loss += graph_loss.item()
+            self._forked_graph_loss += forked_loss.item()
+
+            #update energy
+            volume = sum(map(lambda x: np.prod(x.size()), self.graph.parameters()))
+            self.negative_entropy += np.log(volume)
             f_loss += forked_loss.item()
             g_loss += graph_loss.item()
             self.gas -= g

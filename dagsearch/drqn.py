@@ -39,20 +39,24 @@ class ReplayMemory(object):
     def __len__(self):
         return len(self.memory)
 
-class DQN(nn.Module):
 
-    def __init__(self, world_size, action_size):
-        super(DQN, self).__init__()
+class DRQN(nn.Module):
+    def __init__(self, world_size, action_size, hidden_size=8):
+        super(DRQN, self).__init__()
+        self.embedding_size = world_size // 4
+        self.hidden_size = hidden_size
         self.f1 = nn.Linear(world_size, world_size // 2)
-        self.f2 = nn.Linear(world_size // 2, world_size // 4)
-        self.head = nn.Linear(world_size // 4, action_size)
+        self.f2 = nn.Linear(world_size // 2, self.embedding_size)
+        self.lstm = nn.LSTM(self.embedding_size, self.hidden_size, batch_first=True)
+        self.head = nn.Linear(self.hidden_size, action_size)
 
-    # Called with either one element to determine next action, or a batch
-    # during optimization. Returns tensor([[left0exp,right0exp]...]).
-    def forward(self, x):
+    def forward(self, x, hidden):
         x = F.relu(self.f1(x))
         x = F.relu(self.f2(x))
-        return self.head(x)
+        x = x.view(x.shape[0], 1, -1)
+        x, hidden = self.lstm(x, hidden)
+        x = x.view(x.shape[0], -1)
+        return self.head(x), hidden
 
 
 BATCH_SIZE = 128
@@ -68,13 +72,14 @@ class Trainer(object):
         self.env = env
         self.world_size = world.observe().shape[0]
         self.action_size = len(world.actions())
-        self.policy_net = DQN(self.world_size, self.action_size)
-        self.target_net = DQN(self.world_size, self.action_size)
+        self.policy_net = DRQN(self.world_size, self.action_size)
+        self.target_net = DRQN(self.world_size, self.action_size)
         self.memory = ReplayMemory(10000)
         self.optimizer = optim.RMSprop(self.policy_net.parameters())
         self.optimizer.zero_grad()
         self.steps_done = 0
         self.score_board = []
+        self._hidden_state = (torch.zeros(1, 1, 8), torch.zeros(1,1,8))
 
     def select_action(self, state):
         sample = random.random()
@@ -83,9 +88,15 @@ class Trainer(object):
         self.steps_done += 1
         if sample > eps_threshold:
             with torch.no_grad():
-                return self.policy_net(state).max(1, keepdim=True)[1]
+                y, hidden = self.policy_net(state, self._hidden_state)
+                a = y.max(1, keepdim=True)[1]
+                return a, hidden
         else:
-            return torch.from_numpy(np.array([[self.env.action_space.sample()]]))
+            self._hidden_state = (torch.zeros(1, 1, 8), torch.zeros(1,1,8))
+            return (
+                torch.from_numpy(np.array([[self.env.action_space.sample()]])),
+                self._hidden_state
+            )
 
 
     def optimize_trainer_model(self):
@@ -107,10 +118,15 @@ class Trainer(object):
         reward_batch = torch.from_numpy(np.array(batch.reward, dtype=np.float32))
         #print(state_batch.shape, action_batch.shape)
         #print(action_batch)
-        state_action_values = self.policy_net(state_batch).gather(1, action_batch)
+        hidden_state = (torch.zeros(1, BATCH_SIZE, 8), torch.zeros(1,BATCH_SIZE,8))
+        #TODO this emits a state which can be fed into target net, but should be the same?
+        state_action_values, next_hidden_state = self.policy_net(state_batch, hidden_state)
+        state_action_values = state_action_values.gather(1, action_batch)
 
         next_state_values = torch.zeros(BATCH_SIZE)
-        next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1)[0].detach()
+        #next_hidden_state = torch.cat([h for s, h in zip(batch.next_state, batch.hidden_state)
+        #                                            if s is not None])
+        next_state_values[non_final_mask] = self.target_net(non_final_next_states, next_hidden_state)[0].max(1)[0].detach()
         # Compute the expected Q values
         expected_state_action_values = (next_state_values * GAMMA) + reward_batch
 
@@ -134,7 +150,7 @@ class Trainer(object):
         state = self.env.observe()
         for i in range(iterations):
             # Select and perform an action
-            action = self.select_action(state)
+            action, self._hidden_state = self.select_action(state)
             ob, reward, episode_over, info = self.env.step(action.item())
             if episode_over:
                 print('episode over')

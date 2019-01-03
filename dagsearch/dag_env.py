@@ -43,6 +43,7 @@ class DagSearchEnv(Env):
                  However, official evaluations of your agent are not allowed to
                  use this for learning.
         """
+        assert self.world.gas > 0
         reward, info = self._reward(action)
         ob = self.observe()
         episode_over = self.world.gas <= 0
@@ -51,7 +52,7 @@ class DagSearchEnv(Env):
     def reset(self):
         self.world.rebuild()
         self._last_loss = None
-        return self._observe()
+        return self.observe()
 
     def observe(self):
         return self.world.observe().view(1, -1)
@@ -71,11 +72,13 @@ class DagSearchEnv(Env):
         graph_loss, forked_loss = self.world.train()
         delta_loss = 0.
         if self._last_loss is not None:
-            delta_loss = self._last_loss - graph_loss
+            delta_loss = self._last_loss - graph_loss * 0.999999
         self._last_loss = graph_loss
-        reward = r + delta_loss #+ (forked_loss - graph_loss)
+        reward = r + delta_loss * (self.world.negative_entropy ** .5) #+ (forked_loss - graph_loss)
+        reward = np.tanh(reward)
         info = {
             'delta_loss': delta_loss,
             'loss': graph_loss,
+            'gas': self.world.gas,
         }
         return reward, info
