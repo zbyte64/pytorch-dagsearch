@@ -203,10 +203,13 @@ class Graph(nn.Module):
         else:
             in_dim = self.in_dim
         node = Node(in_nodes=in_nodes, in_dim=in_dim, out_dim=out_dim, channel_dim=self.channel_dim, cell_types=cell_types)
+        self.register_node(key, node)
+        return node
+
+    def register_node(self, key, node):
         if not len(self.nodes):
             node.register_input('input', self.in_dim)
         self.nodes[key] = node
-        return node
 
     def observe(self):
         return torch.FloatTensor([self.in_volume, len(self.nodes)])
@@ -223,6 +226,13 @@ class Graph(nn.Module):
         x = n_x
         return x
 
+    @classmethod
+    def from_model(cls, model):
+        '''
+        Converts an existing model into a graph
+        '''
+        pass
+
 
 class StackedGraph(Graph):
     '''
@@ -236,6 +246,20 @@ class StackedGraph(Graph):
         self.make_layer = make_layer
         self.stack = list()
         self.expand()
+
+    @classmethod
+    def from_graph(cls, graph):
+        '''
+        Convert an existing graph into a stackable graph,
+        each new layer is a copy of the graph but randomized
+        '''
+        g = copy.deepcopy(graph)
+        def make_layer(self, name):
+            nodes = list()
+            for key, node in g.nodes.items():
+                pass
+            return nodes
+        return cls(make_layer)
 
     def expand(self):
         name = str(len(self.stack))

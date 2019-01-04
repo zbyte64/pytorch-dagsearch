@@ -119,23 +119,32 @@ class Conv2dCell(BaseCell):
     def valid(in_dim, out_dim, channel_dim):
         return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] <= out_dim[0] and in_dim[1] >= out_dim[1]
 
+    @staticmethod
+    def conv_output_shape(h_w, kernel_size=1, stride=1, pad=0, dilation=1):
+        from math import floor
+        if type(kernel_size) is not tuple:
+            kernel_size = (kernel_size, kernel_size)
+        h = floor( ((h_w[0] + (2 * pad) - ( dilation * (kernel_size[0] - 1) ) - 1 )/ stride) + 1)
+        w = floor( ((h_w[1] + (2 * pad) - ( dilation * (kernel_size[1] - 1) ) - 1 )/ stride) + 1)
+        return h, w
+
     def get_param_options(self):
-        max_stride = max(self.in_dim[1] // self.out_dim[1], 1)
-        max_kernel_size = min(max(self.in_dim[1] // max_stride - self.out_dim[1], 1), self.max_kernel_size)
         return [
-            ('kernel', 1, max_kernel_size),
-            ('stride', 1, max_stride),
+            ('kernel', 2, self.max_kernel_size),
+            ('stride', 1, 4),
+            ('dilation', 1, 4),
         ]
 
     def forward(self, x):
         params = self.get_param_dict()
         kernel_size = int(params['kernel'])
         stride = min(int(params['stride']), kernel_size)
+        dilation = int(params['dilation'])
         kernel = self.weights
         if kernel_size < self.max_kernel_size:
             kernel = torch.narrow(kernel, 2, 0, kernel_size)
             kernel = torch.narrow(kernel, 3, 0, kernel_size)
-        x = torch.relu(F.conv2d(x, kernel, stride=stride))
+        x = torch.relu(F.conv2d(x, kernel, stride=stride, dilation=dilation))
         x = pad_to_match(x, self.out_dim)
         return x
 
@@ -152,12 +161,11 @@ class Pooling2dCell(BaseCell):
         return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[channel_dim-1] == out_dim[channel_dim-1] and in_dim[channel_dim-1] <= in_dim[1]
 
     def get_param_options(self):
-        max_stride = max(self.in_dim[1] // self.out_dim[1], 1)
-        max_kernel_size = min(max(self.in_dim[1] // max_stride - self.out_dim[1], 1), self.max_kernel_size)
         return [
             ('function', 0, 1),
-            ('kernel', 1, min(self.max_kernel_size, max_kernel_size)),
-            ('stride', 1, max_stride),
+            ('kernel', 2, self.max_kernel_size),
+            ('stride', 1, 4),
+            ('dilation', 1, 4),
         ]
 
     def forward(self, x):
@@ -165,11 +173,11 @@ class Pooling2dCell(BaseCell):
         kernel_size = int(params['kernel'])
         kernel_size = self.out_dim[self.channel_dim-1]
         stride = min(int(params['stride']), kernel_size)
+        dilation = int(params['dilation'])
         if params['function'] > 0:
-            f = F.max_pool2d
+            x = F.max_pool2d(x, kernel_size, stride=stride, dilation=dilation)
         else:
-            f = F.avg_pool2d
-        x = f(x, kernel_size, stride=stride)
+            x = F.avg_pool2d(x, kernel_size, stride=stride)
         x = pad_to_match(x, self.out_dim)
         return x
 
@@ -192,8 +200,9 @@ class DeConv2dCell(BaseCell):
 
     def get_param_options(self):
         return [
-            ('kernel', 1, self.max_kernel_size),
+            ('kernel', 2, self.max_kernel_size),
             ('stride', 1, 5),
+            ('dilation', 1, 4),
         ]
 
     def forward(self, x):
@@ -201,11 +210,12 @@ class DeConv2dCell(BaseCell):
         params = self.get_param_dict()
         kernel_size = int(params['kernel'])
         stride = min(int(params['stride']), kernel_size)
+        dilation = int(params['dilation'])
         kernel = self.weights
         if kernel_size < self.max_kernel_size:
             kernel = torch.narrow(kernel, 2, 0, kernel_size)
             kernel = torch.narrow(kernel, 3, 0, kernel_size)
-        x = torch.relu(F.conv_transpose2d(x, kernel, stride=stride))
+        x = torch.relu(F.conv_transpose2d(x, kernel, stride=stride, dilation=dilation))
         x = pad_to_match(x, self.out_dim)
         return x
 
