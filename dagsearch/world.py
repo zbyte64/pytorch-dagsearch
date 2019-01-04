@@ -34,9 +34,9 @@ class World(object):
     def rebuild(self):
         self.graph = copy.deepcopy(self.initial_graph)
         self.forked_graph = copy.deepcopy(self.initial_graph)
-        self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.001, momentum=0.9)
+        self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
         self.graph_optimizer.zero_grad()
-        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.001, momentum=0.9)
+        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.1, momentum=0.9)
         self.forked_graph_optimizer.zero_grad()
         self._graph_loss = 0.0
         self._forked_graph_loss = 0.0
@@ -45,14 +45,14 @@ class World(object):
         self.cell_index = 0
         self.param_index = 0
         self.input_index = 0
-        self.param_state = torch.zeros(2)
+        self.param_state = torch.zeros(3)
         self.gas = self.initial_gas
         self.negative_entropy = 0.
         self.current_loss = 0.
 
     @property
     def current_node(self):
-        return self.graph.nodes[self.node_index]
+        return self.graph.nodes[self.node_key]
 
     @property
     def current_cell(self):
@@ -63,12 +63,21 @@ class World(object):
 
     @property
     def current_input(self):
-        return self.graph.nodes[self.input_index]
+        return self.graph.nodes[self.input_key]
+
+    @property
+    def input_key(self):
+        return list(self.graph.nodes.keys())[self.input_index]
+
+    @property
+    def node_key(self):
+        return list(self.graph.nodes.keys())[self.node_index]
 
     def get_param_options(self):
         options = [
             ('new_cell_scale1', -4, 4),
             ('new_cell_scale2', -4, 4),
+            ('learning_rate', 0, 8),
         ]
         options.extend(self.current_cell.get_param_options())
         return options
@@ -79,13 +88,13 @@ class World(object):
     def observe(self):
         graph_state = self.graph.observe()
         #reports visible node size
-        max_volume = max(self.graph.in_volume, self.graph.out_volume)
+        max_volume = self.graph.in_volume
         node_state = self.current_node.observe() / max_volume
         #reports the type of cell (one hot)
         cell_state = self.current_cell.observe()
         cell_muted = self.current_node.muted_cells[self.cell_index]
         if self.input_index < len(self.current_node.muted_inputs):
-            input_muted = self.current_node.is_input_muted(self.input_index)
+            input_muted = self.current_node.is_input_muted(self.input_key)
         else:
             input_muted = 0.
         param_state = self.get_param_state()
@@ -95,8 +104,6 @@ class World(object):
         _, p_min, p_max = self.get_param_options()[self.param_index]
         #TODO convey overall network shape
         nav_state = torch.FloatTensor([
-            self.graph.in_volume / max_volume,
-            self.graph.out_volume / max_volume,
             (param_state[self.param_index] - p_min) / p_max,
             cell_muted,
             input_muted,
@@ -129,7 +136,7 @@ class World(object):
 
     @lru_cache()
     def nav_actions(self):
-        a = [self.mov_fork, self.mov_param_up, self.mov_param_down, self.mov_pop_node, self.mov_add_node]
+        a = [self.mov_fork, self.mov_param_up, self.mov_param_down]
         for f in [self.page_node, self.page_cell, self.page_param, self.page_input]:
             a.append(partial(f, direction=-1))
             a.append(partial(f, direction=1))
@@ -180,6 +187,9 @@ class World(object):
             v = self.param_state[param_index] + direction
             v = max(min(v, _max), _min)
             self.param_state[param_index] = v
+        if option_name == 'learning_rate':
+            lr = float(.5 ** (v + 6))
+            self.adjust_learning_rate(lr)
 
     def mov_param_down(self, world):
         self.toggle_param(world, -1)
@@ -201,47 +211,6 @@ class World(object):
         self.cooldown = 20
         return reward
 
-    def mov_add_node(self, world):
-        if self.cooldown:
-            return
-        if len(world.graph.nodes) > 9:
-            return
-        last_prior = world.graph.prior_nodes[-1]
-        prev_dim = last_prior.out_dim
-        s1 = world.param_state[0]
-        s2 = world.param_state[1]
-        n = (s1 + 4) / 8 + .1 #(.1, 3.1)
-        scale = lambda v: int(min(max(n * v, 1), 300))
-        if len(prev_dim) == 3:
-            wh = int(max(prev_dim[1] + s2, 1))
-            out_dim = [scale(prev_dim[0]), wh, wh]
-        else:
-            out_dim = list(map(scale, prev_dim))
-        print('#'*20)
-        print('create node', out_dim, n)
-        try:
-            world.graph.create_node(tuple(out_dim))
-        except AssertionError as e:
-            print(e)
-            return -.1
-        self.page_node(world, 0)
-        self.cooldown = 20
-        self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.001, momentum=0.9)
-        #return -len(world.graph.prior_nodes) / 10 - n
-
-    def mov_pop_node(self, world):
-        if self.cooldown:
-            return
-        if len(world.graph.prior_nodes) < 2:
-            return
-        print('#'*20)
-        print('pop last node')
-        world.graph.pop_last_node()
-        self.page_node(world, 0)
-        self.cooldown = 20
-        self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.001, momentum=0.9)
-        #return len(world.graph.prior_nodes) / 20
-
     def fork_graph(self, keep_current=False):
         print('#'*20)
         print('fork graph', keep_current)
@@ -252,11 +221,18 @@ class World(object):
             self.graph_optimizer = self.forked_graph_optimizer
         self.graph = winner
         self.forked_graph = copy.deepcopy(winner)
-        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.001, momentum=0.9)
+        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.1, momentum=0.9)
         #copy gradients?
         self.forked_graph_optimizer.load_state_dict(self.graph_optimizer.state_dict())
         self._forked_graph_loss = 0.0
         self._graph_loss = 0.0
+
+    def adjust_learning_rate(self, lr):
+        #lr = args.lr * (0.1 ** (epoch // 30))
+        print('#'*30)
+        print('lr', lr)
+        for param_group in self.graph_optimizer.param_groups:
+            param_group['lr'] = lr
 
     def train(self, iterations=1):
         f_loss = 0.
@@ -269,6 +245,7 @@ class World(object):
             graph_loss.backward()
             self.graph_optimizer.step()
             g += time.time()
+            self._graph_t_size = g
 
             forked_loss = self.criterion(self.forked_graph(x), y)
             forked_loss.backward()
@@ -288,12 +265,12 @@ class World(object):
 
     def draw(self):
         G = nx.OrderedDiGraph()
-        for ni, node in enumerate(self.graph.nodes):
+        for ni, node in self.graph.nodes.items():
             in_node_n = 'node_%s_input' % ni
             out_node_n = 'node_%s_output' % ni
             G.add_node(in_node_n, in_dim=node.in_dim)
             G.add_node(out_node_n, out_dim=node.out_dim)
-            for ii, in_node in enumerate(node.in_nodes):
+            for ii, in_node in node.in_node_adapters.items():
                 if not node.is_input_muted(ii):
                     G.add_edge('node_%s_output' % ii, in_node_n)
             for ic, cell in enumerate(node.cells):

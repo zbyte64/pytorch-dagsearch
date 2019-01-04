@@ -99,6 +99,9 @@ class LinearCell(BaseCell):
         x = activation(self.f(x))
         return x.view(-1, *self.out_dim)
 
+    def mov_scramble(self, world):
+        nn.init.uniform_(self.f.weight)
+
 
 @register_cell
 class Conv2dCell(BaseCell):
@@ -135,6 +138,9 @@ class Conv2dCell(BaseCell):
         x = torch.relu(F.conv2d(x, kernel, stride=stride))
         x = pad_to_match(x, self.out_dim)
         return x
+
+    def mov_scramble(self, world):
+        nn.init.xavier_uniform_(self.weights)
 
 
 @register_cell
@@ -202,3 +208,6 @@ class DeConv2dCell(BaseCell):
         x = torch.relu(F.conv_transpose2d(x, kernel, stride=stride))
         x = pad_to_match(x, self.out_dim)
         return x
+
+    def mov_scramble(self, world):
+        nn.init.xavier_uniform_(self.weights)

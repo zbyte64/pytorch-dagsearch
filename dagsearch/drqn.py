@@ -41,21 +41,23 @@ class ReplayMemory(object):
 
 
 class DRQN(nn.Module):
-    def __init__(self, world_size, action_size, hidden_size=8):
+    def __init__(self, world_size, action_size, hidden_size=8, num_layers=1):
         super(DRQN, self).__init__()
-        self.embedding_size = world_size // 4
+        self.embedding_size = world_size * 2
         self.hidden_size = hidden_size
-        self.f1 = nn.Linear(world_size, world_size // 2)
-        self.f2 = nn.Linear(world_size // 2, self.embedding_size)
-        self.lstm = nn.LSTM(self.embedding_size, self.hidden_size, batch_first=True)
-        self.head = nn.Linear(self.hidden_size, action_size)
+        self.num_layers = num_layers
+        self.f1 = nn.Linear(world_size, world_size * 2)
+        self.f2 = nn.Linear(world_size * 2, self.embedding_size*num_layers)
+        self.lstm = nn.LSTM(self.embedding_size, self.hidden_size,
+            num_layers=num_layers, batch_first=True)
+        self.head = nn.Linear(self.hidden_size*num_layers, action_size)
 
     def forward(self, x, hidden):
         x = F.relu(self.f1(x))
         x = F.relu(self.f2(x))
-        x = x.view(x.shape[0], 1, -1)
+        x = x.view((x.shape[0], self.num_layers, self.embedding_size))
         x, hidden = self.lstm(x, hidden)
-        x = x.view(x.shape[0], -1)
+        x = x.contiguous().view((x.shape[0], -1))
         return self.head(x), hidden
 
 
@@ -72,14 +74,19 @@ class Trainer(object):
         self.env = env
         self.world_size = world.observe().shape[0]
         self.action_size = len(world.actions())
-        self.policy_net = DRQN(self.world_size, self.action_size)
-        self.target_net = DRQN(self.world_size, self.action_size)
+        self.hidden_size = 16
+        self.hidden_layers = 1
+        self.policy_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers)
+        self.target_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers)
         self.memory = ReplayMemory(10000)
         self.optimizer = optim.RMSprop(self.policy_net.parameters())
         self.optimizer.zero_grad()
         self.steps_done = 0
         self.score_board = []
-        self._hidden_state = (torch.zeros(1, 1, 8), torch.zeros(1,1,8))
+        self._hidden_state = (
+            torch.zeros(self.hidden_layers, 1, self.hidden_size),
+            torch.zeros(self.hidden_layers, 1, self.hidden_size)
+        )
 
     def select_action(self, state):
         sample = random.random()
@@ -92,7 +99,10 @@ class Trainer(object):
                 a = y.max(1, keepdim=True)[1]
                 return a, hidden
         else:
-            self._hidden_state = (torch.zeros(1, 1, 8), torch.zeros(1,1,8))
+            self._hidden_state = (
+                torch.zeros(self.hidden_layers, 1, self.hidden_size),
+                torch.zeros(self.hidden_layers, 1, self.hidden_size)
+            )
             return (
                 torch.from_numpy(np.array([[self.env.action_space.sample()]])),
                 self._hidden_state
@@ -118,7 +128,10 @@ class Trainer(object):
         reward_batch = torch.from_numpy(np.array(batch.reward, dtype=np.float32))
         #print(state_batch.shape, action_batch.shape)
         #print(action_batch)
-        hidden_state = (torch.zeros(1, BATCH_SIZE, 8), torch.zeros(1,BATCH_SIZE,8))
+        hidden_state = (
+            torch.zeros(self.hidden_layers, BATCH_SIZE, self.hidden_size),
+            torch.zeros(self.hidden_layers, BATCH_SIZE, self.hidden_size)
+        )
         #TODO this emits a state which can be fed into target net, but should be the same?
         state_action_values, next_hidden_state = self.policy_net(state_batch, hidden_state)
         state_action_values = state_action_values.gather(1, action_batch)
@@ -178,4 +191,4 @@ class Trainer(object):
         py = self.world.graph(x)
         loss = self.world.criterion(py, y)
         print('Validation loss:', loss)
-        heapq.heappush(self.score_board, (loss, self.world.graph))
+        #.heappush(self.score_board, (loss, self.world.graph))

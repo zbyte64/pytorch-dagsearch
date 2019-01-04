@@ -74,7 +74,9 @@ class DagSearchEnv(Env):
         if self._last_loss is not None:
             delta_loss = self._last_loss - graph_loss * 0.999999
         self._last_loss = graph_loss
-        reward = r + delta_loss * (self.world.negative_entropy ** .5) #+ (forked_loss - graph_loss)
+        reward = r + 1/graph_loss + delta_loss + (forked_loss - graph_loss)
+        if reward > 1:
+            reward /= self.world._graph_t_size
         reward = np.tanh(reward)
         info = {
             'delta_loss': delta_loss,

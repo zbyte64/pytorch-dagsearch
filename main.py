@@ -1,3 +1,4 @@
+import os
 from dagsearch.dag import Graph
 from dagsearch.world import World
 from dagsearch.cells import CELL_TYPES
@@ -29,18 +30,23 @@ validata_loader = torch.utils.data.DataLoader(validata,
                                           batch_size=batch_size,
                                           shuffle=True,)
 
-g = Graph(cell_types, in_dim, out_dim)
+g = Graph(cell_types, in_dim)
 g.create_node((4, 28, 28))
 g.create_node((4, 28, 28))
 g.create_node((8, 20, 20))
 g.create_node((18, 8, 8))
+g.create_node(out_dim)
 world = World(g, data_loader, validata_loader, nn.CrossEntropyLoss(), initial_gas=30)
 
 print(world.actions())
 print(world.observe())
 
 env = DagSearchEnv(world)
+env.render()
 trainer = Trainer(world, env)
+if os.path.exists('./trainer.pth'):
+    trainer.policy_net.load_state_dict(torch.load('./trainer.pth'))
 trainer.train(10000)
 env.render()
 print(trainer.score_board)
+torch.save(trainer.policy_net.state_dict(), './trainer.pth')
