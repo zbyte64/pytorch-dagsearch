@@ -68,7 +68,7 @@ class BaseCell(nn.Module):
         return {k: float(self.param_state[i]) for i, (k, _n, _x) in enumerate(self.get_param_options())}
 
     def actions(self):
-        return [self.mov_scramble]
+        return []#self.mov_scramble]
 
     def mov_scramble(self, world):
         '''
@@ -88,15 +88,19 @@ class LinearCell(BaseCell):
         return len(out_dim) == 1 or len(in_dim) == 1
 
     def get_param_options(self):
-        return [('activation', 0, 1)]
+        return [('activation', 0, 3)]
 
     def forward(self, x):
         params = self.get_param_dict()
         x = x.view(x.shape[0], -1)
-        activation = torch.relu
-        if params['activation'] > 0:
-            activation = torch.tanh
-        x = activation(self.f(x))
+        activation = int(params['activation'])
+        a_f = {
+            0: torch.relu,
+            1: torch.tanh,
+            2: torch.sigmoid,
+            3: lambda x: x,
+        }[activation]
+        x = a_f(self.f(x))
         return x.view(-1, *self.out_dim)
 
     def mov_scramble(self, world):
@@ -109,10 +113,10 @@ class Conv2dCell(BaseCell):
     #CONSIDER: we can oversize our kernel and slice down, allowing for agent to change size or stride
     def __init__(self, in_dim, out_dim, channel_dim):
         super(Conv2dCell, self).__init__(in_dim, out_dim, channel_dim)
-        self.weights = torch.ones((
+        self.weights = torch.nn.Parameter(torch.ones((
             out_dim[channel_dim-1],
             in_dim[channel_dim-1],
-            self.max_kernel_size, self.max_kernel_size), requires_grad=True)
+            self.max_kernel_size, self.max_kernel_size)))
         nn.init.xavier_uniform_(self.weights)
 
     @staticmethod
@@ -122,6 +126,7 @@ class Conv2dCell(BaseCell):
     @staticmethod
     def conv_output_shape(h_w, kernel_size=1, stride=1, pad=0, dilation=1):
         from math import floor
+        assert len(h_w) == 2
         if type(kernel_size) is not tuple:
             kernel_size = (kernel_size, kernel_size)
         h = floor( ((h_w[0] + (2 * pad) - ( dilation * (kernel_size[0] - 1) ) - 1 )/ stride) + 1)
@@ -140,11 +145,25 @@ class Conv2dCell(BaseCell):
         kernel_size = int(params['kernel'])
         stride = min(int(params['stride']), kernel_size)
         dilation = int(params['dilation'])
+        padding = 0
+        h, w = self.conv_output_shape(x.shape[2:4], kernel_size, stride, padding, dilation)
+        while h < 1:
+            if stride > 1:
+                stride -= 1
+            elif dilation > 1:
+                dilation -= 1
+            elif padding > 0:
+                padding -= 1
+            elif kernel > 1:
+                kernel -= 1
+            else:
+                assert False, 'Cannot fit convolution'
+            h, w = self.conv_output_shape(x.shape[2:4], kernel_size, stride, padding, dilation)
         kernel = self.weights
         if kernel_size < self.max_kernel_size:
             kernel = torch.narrow(kernel, 2, 0, kernel_size)
             kernel = torch.narrow(kernel, 3, 0, kernel_size)
-        x = torch.relu(F.conv2d(x, kernel, stride=stride, dilation=dilation))
+        x = torch.relu(F.conv2d(x, kernel, stride=stride, dilation=dilation, padding=padding))
         x = pad_to_match(x, self.out_dim)
         return x
 

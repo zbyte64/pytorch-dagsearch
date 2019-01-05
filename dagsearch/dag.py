@@ -4,9 +4,17 @@ from torch import functional as F
 import torch.optim as optim
 import numpy as np
 import random
+import copy
 
 
 flatten = lambda x: x.view(x.shape[0], -1)
+
+def init_weights(m):
+    if type(m) == nn.Linear:
+        nn.init.uniform_(m.weight)
+    if type(m) == nn.Conv2d:
+        nn.init.xavier_uniform(m.weight)
+
 
 class Identity(nn.Module):
     def forward(self, x):
@@ -74,6 +82,7 @@ class Connector(nn.Module):
                 View(self.in_volume),
                 nn.Linear(self.in_volume, self.out_volume),
             ])
+        transforms.append(View(*self.out_dim))
         #normalize
         if len(self.out_dim) == 3:
             transforms.append(nn.BatchNorm2d(self.out_dim[0]))
@@ -81,7 +90,6 @@ class Connector(nn.Module):
             transforms.append(nn.BatchNorm1d(self.out_dim[0]))
         elif len(self.out_dim) == 1:
             transforms.append(nn.LayerNorm(self.out_dim))
-        transforms.append(View(*self.out_dim))
         return torch.nn.Sequential(*transforms)
 
     def forward(self, x):
@@ -106,9 +114,9 @@ class Node(nn.Module):
         for key, in_node in in_nodes.items():
             self.register_input(key, in_node)
         if in_nodes:
-            self.muted_inputs[key] = -1
+            self.muted_inputs.pop(key)
 
-    def register_input(self, key, in_node_or_dim, drop_out=None):
+    def register_input(self, key, in_node_or_dim, drop_out=None, muteable=True):
         if isinstance(in_node_or_dim, Node):
             adaptor = self.create_node_adapter(in_node_or_dim)
         else:
@@ -116,25 +124,24 @@ class Node(nn.Module):
         if drop_out is not None:
             adaptor = nn.Sequential(adaptor, nn.Dropout(drop_out))
         self.in_node_adapters[key] = adaptor
-        self.muted_inputs[key] = torch.tensor(-1) if key == 'input' else torch.tensor(1)
+        if muteable:
+            self.muted_inputs[key] = torch.tensor(-1)
 
     def create_node_adapter(self, in_node):
         a = Connector(in_node.out_dim, self.in_dim)
-        def init_weights(m):
-            if type(m) == nn.Linear:
-                nn.init.uniform_(m.weight)
-            if type(m) == nn.Conv2d:
-                nn.init.xavier_uniform(m.weight)
         a.apply(init_weights)
         return a
 
     def is_input_muted(self, node_id):
-        return self.muted_inputs.get(node_id, 1) > 0
+        return self.muted_inputs.get(node_id, -1) > 0
 
     def forward(self, x_dict):
         x_ts = []
         for node_id, a in self.in_node_adapters.items():
             if not self.is_input_muted(node_id):
+                if node_id not in x_dict:
+                    assert False, 'out of order connection'
+                    continue
                 x_i = a(x_dict[node_id])
                 assert x_i.shape[1:] == self.in_dim, '%s != %s (from %s)' % (x_i.shape, self.in_dim, node_id)
                 x_ts.append(x_i)
@@ -179,12 +186,22 @@ class Node(nn.Module):
             self.muted_cells[cell_index] = -1
 
     def toggle_input(self, world):
-        key = world.input_key
+        key = world.input_index
+        if key < 0:
+            return
+        key = str(key)
         if key in self.muted_inputs:
             self.muted_inputs[key] *= 1
+        else:
+            self.register_input(key, world.graph.nodes[key])
 
 
 class Graph(nn.Module):
+    '''
+    Creates a DAG computation of tunable cells that share weights
+    Differs from ENAS in that preset cell types have scalable params
+    https://arxiv.org/pdf/1802.03268.pdf
+    '''
     def __init__(self, cell_types, in_dim, channel_dim=1):
         super(Graph, self).__init__()
         self.cell_types = cell_types
@@ -208,7 +225,7 @@ class Graph(nn.Module):
 
     def register_node(self, key, node):
         if not len(self.nodes):
-            node.register_input('input', self.in_dim)
+            node.register_input('input', self.in_dim, muteable=False)
         self.nodes[key] = node
 
     def observe(self):
@@ -221,7 +238,14 @@ class Graph(nn.Module):
             #otherwise we have been suplied input from another network
             assert 'input' in x
         for key, node in self.nodes.items():
-            n_x = node(outputs)
+            try:
+                n_x = node(outputs)
+            except:
+                print(outputs.keys())
+                print(key)
+                print(node.in_dim)
+                print(node.in_node_adapters)
+                raise
             outputs[key] = n_x
         x = n_x
         return x
@@ -236,13 +260,16 @@ class Graph(nn.Module):
 
 class StackedGraph(Graph):
     '''
-    https://arxiv.org/pdf/1706.03256.pdf
-
     A DAG graph that can add layers,
     freezing the previous layer and connecting the new
+
+    Unlike PNN, this can stack multiple layers
+    make_layer is a layer factory responsible for creating and connecting new nodes
+
+    https://arxiv.org/pdf/1706.03256.pdf
     '''
-    def __init__(self, make_layer):
-        super(StackedGraph, self).__init__()
+    def __init__(self, make_layer, cell_types, in_dim, channel_dim=1):
+        super(StackedGraph, self).__init__(cell_types, in_dim, channel_dim)
         self.make_layer = make_layer
         self.stack = list()
         self.expand()
@@ -252,27 +279,41 @@ class StackedGraph(Graph):
         '''
         Convert an existing graph into a stackable graph,
         each new layer is a copy of the graph but randomized
+        Only connects new nodes in a linear fashion!
         '''
-        g = copy.deepcopy(graph)
-        def make_layer(self, name):
-            nodes = list()
-            for key, node in g.nodes.items():
-                pass
+        template_nodes = list(graph.nodes.values())
+        def make_layer(self):
+            nodes = copy.deepcopy(template_nodes)
+            #randomize
+            list(map(lambda x: x.apply(init_weights), nodes))
+            if len(self.nodes):
+                priors = list(self.nodes.items())[-len(nodes):]
+            else:
+                priors = None
+            keys = map(str, range(len(self.nodes), len(self.nodes)+len(nodes)))
+            #reflow links
+            last_chain = 'input', self.in_dim
+            for key, t_node in zip(keys, nodes):
+                t_node.in_node_adapters = nn.ModuleDict()
+                if priors:
+                    p_key, p_node = priors.pop(0)
+                    t_node.register_input(p_key, p_node, muteable=False)
+                t_node.register_input(*last_chain, muteable=False)
+                last_chain = (key, t_node)
+                self.register_node(key, t_node)
             return nodes
-        return cls(make_layer)
+        return cls(make_layer, graph.cell_types, graph.in_dim, graph.channel_dim)
 
     def expand(self):
-        name = str(len(self.stack))
-        prior_keys = list(self.nodes.keys())[-len(self.stack[-1]):]
-        new_nodes = self.make_layer(self, name)
+        new_nodes = self.make_layer(self)
+        list(map(lambda x: x.train(), new_nodes))
         #new_layer.randomize_state()
-        previous_frozen_nodes = list(map(self._freeze, self.stack[-1]))
+        if len(self.stack):
+            previous_frozen_nodes = list(map(self._freeze, self.stack[-1]))
         self.stack.append(new_nodes)
-        #connect nodes
-        for key, p_node, t_node in zip(prior_keys, previous_frozen_nodes, new_nodes):
-            t_node.register_input(key, p_node)
 
     def _freeze(self, g):
         for param in g.parameters():
             param.requires_grad = False
+        g.eval()
         return g

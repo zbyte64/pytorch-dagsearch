@@ -74,7 +74,7 @@ class Trainer(object):
         self.env = env
         self.world_size = world.observe().shape[0]
         self.action_size = len(world.actions())
-        self.hidden_size = 16
+        self.hidden_size = 100
         self.hidden_layers = 1
         self.policy_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers)
         self.target_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers)

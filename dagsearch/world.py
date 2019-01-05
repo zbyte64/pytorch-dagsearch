@@ -8,6 +8,9 @@ import networkx as nx
 import copy
 from functools import lru_cache, partial
 import time
+from tensorboardX import SummaryWriter
+
+from .dag import StackedGraph
 
 
 def inf_data(dataloader):
@@ -30,10 +33,12 @@ class World(object):
         self.criterion = loss_fn
         self.test_data = inf_data(test_dataloader)
         self.valid_data = inf_data(valid_dataloader)
+        self.summary = SummaryWriter()
+        #self.summary.add_graph(graph)
 
     def rebuild(self):
-        self.graph = copy.deepcopy(self.initial_graph)
-        self.forked_graph = copy.deepcopy(self.initial_graph)
+        self.graph = StackedGraph.from_graph(self.initial_graph)
+        self.forked_graph = StackedGraph.from_graph(self.initial_graph)
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
         self.graph_optimizer.zero_grad()
         self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.1, momentum=0.9)
@@ -44,15 +49,28 @@ class World(object):
         self.node_index = 0
         self.cell_index = 0
         self.param_index = 0
-        self.input_index = 0
+        self.input_index = -1
         self.param_state = torch.zeros(3)
         self.gas = self.initial_gas
         self.negative_entropy = 0.
         self.current_loss = 0.
+        self.ticks = 0
+
+    @property
+    def active_nodes(self):
+        return self.graph.stack[-1]
+
+    @property
+    def input_nodes(self):
+        return self.graph.nodes
 
     @property
     def current_node(self):
-        return self.graph.nodes[self.node_key]
+        return self.active_nodes[self.node_index]
+
+    @property
+    def node_key(self):
+        return str((len(self.graph.stack) - 1) * len(self.initial_graph.nodes) + self.node_index)
 
     @property
     def current_cell(self):
@@ -63,15 +81,7 @@ class World(object):
 
     @property
     def current_input(self):
-        return self.graph.nodes[self.input_key]
-
-    @property
-    def input_key(self):
-        return list(self.graph.nodes.keys())[self.input_index]
-
-    @property
-    def node_key(self):
-        return list(self.graph.nodes.keys())[self.node_index]
+        return self.input_nodes[str(self.input_index)]
 
     def get_param_options(self):
         options = [
@@ -94,7 +104,7 @@ class World(object):
         cell_state = self.current_cell.observe()
         cell_muted = self.current_node.muted_cells[self.cell_index]
         if self.input_index < len(self.current_node.muted_inputs):
-            input_muted = self.current_node.is_input_muted(self.input_key)
+            input_muted = self.current_node.is_input_muted(str(self.input_index))
         else:
             input_muted = 0.
         param_state = self.get_param_state()
@@ -136,7 +146,7 @@ class World(object):
 
     @lru_cache()
     def nav_actions(self):
-        a = [self.mov_fork, self.mov_param_up, self.mov_param_down]
+        a = [self.mov_param_up, self.mov_param_down, self.mov_add_stack]
         for f in [self.page_node, self.page_cell, self.page_param, self.page_input]:
             a.append(partial(f, direction=-1))
             a.append(partial(f, direction=1))
@@ -156,7 +166,7 @@ class World(object):
         return v
 
     def page_node(self, world, direction):
-        self.node_index = self._move(self.node_index, direction, 0, len(self.graph.nodes)-1)
+        self.node_index = self._move(self.node_index, direction, 0, len(self.active_nodes)-1)
         #ensure input is less or equal to node index
         self.page_input(world, 0)
         self.page_cell(world, 0)
@@ -171,7 +181,11 @@ class World(object):
         self.param_index = self._move(self.param_index, direction, 0, len(o)-1)
 
     def page_input(self, world, direction):
-        self.input_index = self._move(self.input_index, direction, 0, self.node_index)
+        m = len(self.input_nodes) - len(self.active_nodes) + self.node_index - 1
+        if m < 0:
+            self.input_index = -1
+        else:
+            self.input_index = self._move(self.input_index, direction, 0, m)
 
     def toggle_param(self, world, direction):
         param_index = world.param_index
@@ -212,6 +226,8 @@ class World(object):
         return reward
 
     def fork_graph(self, keep_current=False):
+        if self.cooldown:
+            return
         print('#'*20)
         print('fork graph', keep_current)
         if keep_current:
@@ -226,6 +242,7 @@ class World(object):
         self.forked_graph_optimizer.load_state_dict(self.graph_optimizer.state_dict())
         self._forked_graph_loss = 0.0
         self._graph_loss = 0.0
+        self.cooldown = 20
 
     def adjust_learning_rate(self, lr):
         #lr = args.lr * (0.1 ** (epoch // 30))
@@ -241,25 +258,40 @@ class World(object):
             x, y = next(self.test_data)
 
             g = -time.time()
-            graph_loss = self.criterion(self.graph(x), y)
+            py = self.graph(x)
+            graph_loss = self.criterion(py, y)
             graph_loss.backward()
             self.graph_optimizer.step()
             g += time.time()
             self._graph_t_size = g
 
-            forked_loss = self.criterion(self.forked_graph(x), y)
-            forked_loss.backward()
-            self.forked_graph_optimizer.step()
+            #forked_loss = self.criterion(self.forked_graph(x), y)
+            #forked_loss.backward()
+            #self.forked_graph_optimizer.step()
 
             self._graph_loss += graph_loss.item()
-            self._forked_graph_loss += forked_loss.item()
+            #self._forked_graph_loss += forked_loss.item()
 
             #update energy
             volume = sum(map(lambda x: np.prod(x.size()), self.graph.parameters()))
             self.negative_entropy += np.log(volume)
-            f_loss += forked_loss.item()
+            #f_loss += forked_loss.item()
             g_loss += graph_loss.item()
             self.gas -= g
+            self.summary.add_scalar('time_taken', g, global_step=self.ticks)
+            self.summary.add_scalars('loss', {
+                #'forked_loss': forked_loss.item(),
+                'main_loss': graph_loss.item(),
+            }, global_step=self.ticks)
+            self.summary.add_histogram('y', y.numpy(), global_step=self.ticks)
+            try:
+                self.summary.add_histogram('predicted_y', py.detach().numpy(), global_step=self.ticks)
+            except:
+                print('py has gone cray cray')
+                self.gas = -1.
+            #images = x[0]
+            #self.summary.add_images('x', images, global_step=self.ticks)
+            self.ticks += 1
         self.current_loss = g_loss
         return (g_loss, f_loss)
 
@@ -280,3 +312,13 @@ class World(object):
                     G.add_edge(in_node_n, c_n)
                     G.add_edge(c_n, out_node_n)
         return G
+
+    def mov_add_stack(self, world):
+        if self.cooldown:
+            return
+        if self._graph_loss > 1.0:
+            return
+        print('#'*20)
+        print('expanding')
+        self.graph.expand()
+        self.cooldown = 20

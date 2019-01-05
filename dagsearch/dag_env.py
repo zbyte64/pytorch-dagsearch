@@ -74,7 +74,7 @@ class DagSearchEnv(Env):
         if self._last_loss is not None:
             delta_loss = self._last_loss - graph_loss * 0.999999
         self._last_loss = graph_loss
-        reward = r + delta_loss + (forked_loss - graph_loss)
+        reward = r + delta_loss# + (forked_loss - graph_loss)
         if reward > 0:
             reward /= self.world._graph_t_size
         if self.world.gas < 0:
