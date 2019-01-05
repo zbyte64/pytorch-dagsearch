@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from .env import *
 
 Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward'))
+                        ('state', 'action', 'next_state', 'reward', 'hidden_state'))
 
 
 class ReplayMemory(object):
@@ -129,13 +129,12 @@ class Trainer(object):
         state_batch = torch.cat(batch.state).to(device)
         action_batch = torch.cat(batch.action).to(device)
         reward_batch = torch.tensor(batch.reward, dtype=torch.float32).to(device)
-        #print(state_batch.shape, action_batch.shape)
-        #print(action_batch)
+        #reconstruct prior memory for training policy net
         hidden_state = (
-            torch.zeros(self.hidden_layers, BATCH_SIZE, self.hidden_size).to(device),
-            torch.zeros(self.hidden_layers, BATCH_SIZE, self.hidden_size).to(device)
+            torch.cat([b[0] for b in batch.hidden_state], dim=1).to(device),
+            torch.cat([b[1] for b in batch.hidden_state], dim=1).to(device)
         )
-        #TODO this emits a state which can be fed into target net, but should be the same?
+        #this emits a state which can be fed into target net, but should we?
         state_action_values, next_hidden_state = self.policy_net(state_batch, hidden_state)
         state_action_values = state_action_values.gather(1, action_batch)
 
@@ -166,6 +165,7 @@ class Trainer(object):
         state = self.env.observe()
         for i in range(iterations):
             # Select and perform an action
+            prior_hidden_state = self._hidden_state
             action, self._hidden_state = self.select_action(state)
             assert action.dtype == torch.int64, str(action.dtype)
             ob, reward, episode_over, info = self.env.step(int(action.item()))
@@ -174,7 +174,7 @@ class Trainer(object):
             #print(action.item(), reward, episode_over, info)
             next_state = ob
             # Store the transition in memory
-            self.memory.push(state, action.to(device), next_state, reward)
+            self.memory.push(state, action.to(device), next_state, reward, prior_hidden_state)
             state = next_state
 
             # Perform one step of the optimization (on the target network)

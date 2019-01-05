@@ -77,7 +77,7 @@ class DagSearchEnv(Env):
         elif self._lowest_loss > graph_loss:
             l_delta = self._lowest_loss - graph_loss
             self._lowest_loss = graph_loss
-            self.world.gas += l_delta * (self.world.initial_gas ** 2)
+            self.world.gas += l_delta * self.world.initial_gas * 2
         delta_loss = 0.
         if self._last_loss is not None:
             delta_loss = self._last_loss - graph_loss * 0.999999
