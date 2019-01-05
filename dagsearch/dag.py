@@ -139,14 +139,11 @@ class Node(nn.Module):
     def is_input_muted(self, node_id):
         return self.muted_inputs.get(node_id, -1) > 0
 
-    def forward(self, x_dict):
+    def forward(self, x_list):
         x_ts = []
-        for node_id, a in self.in_node_adapters.items():
+        for x_i, (node_id, a) in zip(x_list, self.in_node_adapters.items()):
             if not self.is_input_muted(node_id):
-                if node_id not in x_dict:
-                    assert False, 'out of order connection'
-                    continue
-                x_i = a(x_dict[node_id])
+                x_i = a(x_i)
                 assert x_i.shape[1:] == self.in_dim, '%s != %s (from %s)' % (x_i.shape, self.in_dim, node_id)
                 x_ts.append(x_i)
         if len(x_ts) > 1:
@@ -239,14 +236,16 @@ class Graph(nn.Module):
         return torch.FloatTensor([self.in_volume, len(self.nodes)])
 
     def forward(self, x, outputs=None):
+        assert x is not None
         if outputs is None:
             outputs = {'input': x}
         else:
             #otherwise we have been suplied input from another network
             assert 'input' in x
         for key, node in self.nodes.items():
+            inputs = [outputs[k] for k in node.in_node_adapters.keys()]
             try:
-                n_x = node(outputs)
+                n_x = node(inputs)
             except:
                 print(outputs.keys())
                 print(key)

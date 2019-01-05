@@ -115,6 +115,7 @@ class Trainer(object):
     def optimize_trainer_model(self):
         if len(self.memory) < BATCH_SIZE:
             return
+        self.optimizer.zero_grad()
         transitions = self.memory.sample(BATCH_SIZE)
         # Transpose the batch (see http://stackoverflow.com/a/19343/3343043 for
         # detailed explanation). This converts batch-array of Transitions
@@ -150,7 +151,6 @@ class Trainer(object):
         loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
 
         # Optimize the model
-        self.optimizer.zero_grad()
         loss.backward()
         for param in self.policy_net.parameters():
             param.grad.data.clamp_(-1, 1)

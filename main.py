@@ -49,16 +49,16 @@ g.create_node(out_dim)
 #dot.view()
 world = World(g, data_loader, validata_loader, nn.CrossEntropyLoss(), initial_gas=60*5)
 
-print(world.actions())
-print(world.observe())
-
 env = DagSearchEnv(world)
 #env.render()
 trainer = Trainer(world, env)
+import copy
 if os.path.exists('./trainer.pth'):
     trainer.policy_net.load_state_dict(torch.load('./trainer.pth'))
+trainer.train(5)
+exit()
 while True:
-    trainer.train(10000)
+    trainer.train(1000)
     #env.render()
     print('saving...')
     torch.save(trainer.policy_net.state_dict(), './trainer.pth')

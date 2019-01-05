@@ -34,7 +34,7 @@ class World(object):
         self.valid_data = inf_data(valid_dataloader)
         self.summary = SummaryWriter()
         self.rebuild()
-        #self.summary.add_graph(graph)
+        self.summary.add_graph(self.graph, next(self.test_data)[0])
 
     def rebuild(self):
         self.graph = StackedGraph.from_graph(self.initial_graph)
@@ -52,7 +52,6 @@ class World(object):
         self.input_index = -1
         self.param_state = torch.zeros(3)
         self.gas = self.initial_gas
-        self.negative_entropy = 0.
         self.current_loss = 0.
         self.ticks = 0
 
@@ -118,14 +117,14 @@ class World(object):
             cell_muted,
             input_muted,
             self.current_loss,
-            self.negative_entropy,
+            self.ticks,
             self.gas / self.initial_gas,
             self.cooldown / 20,
             len(self.graph.nodes) / 10,
-            self.node_index / len(self.graph.nodes),
-            self.cell_index / len(self.graph.cell_types),
+            self.node_index / len(self.active_nodes),
+            self.cell_index / len(self.current_node.cells),
             self.param_index / param_state.shape[0],
-            self.input_index / len(self.graph.nodes),
+            self.input_index / len(self.input_nodes),
         ])
         return torch.cat([nav_state, graph_state, node_state, cell_state]).detach()
 
@@ -257,6 +256,8 @@ class World(object):
         gf = self.graph.to(device)
         ff = self.forked_graph.to(device)
         for i in range(iterations):
+            self.graph_optimizer.zero_grad()
+            self.forked_graph_optimizer.zero_grad()
             x, y = next(self.test_data)
             vx = x.to(device)
             vy = y.to(device)
