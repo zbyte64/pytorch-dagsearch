@@ -168,7 +168,7 @@ class Trainer(object):
             if episode_over:
                 print('episode over')
             else:
-                print('Reward %.2f , Loss %.2f , Gas %.2f' % (reward, info['loss'], info['gas']))
+                print('Reward %.3f , Loss %.4f , Gas %.2f' % (reward, info['loss'], info['gas']))
             #print(action.item(), reward, episode_over, info)
             next_state = ob
             # Store the transition in memory
@@ -185,7 +185,7 @@ class Trainer(object):
                 self.env.reset()
 
     def score_model(self):
-        self.world.mov_fork(self.world)
+        #self.world.mov_fork(self.world)
         valid_data = next(self.world.valid_data)
         x, y = valid_data
         py = self.world.graph(x)

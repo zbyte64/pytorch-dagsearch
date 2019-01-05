@@ -265,22 +265,22 @@ class World(object):
             g += time.time()
             self._graph_t_size = g
 
-            #forked_loss = self.criterion(self.forked_graph(x), y)
-            #forked_loss.backward()
-            #self.forked_graph_optimizer.step()
+            forked_loss = self.criterion(self.forked_graph(x), y)
+            forked_loss.backward()
+            self.forked_graph_optimizer.step()
 
             self._graph_loss += graph_loss.item()
-            #self._forked_graph_loss += forked_loss.item()
+            self._forked_graph_loss += forked_loss.item()
 
             #update energy
             volume = sum(map(lambda x: np.prod(x.size()), self.graph.parameters()))
             self.negative_entropy += np.log(volume)
-            #f_loss += forked_loss.item()
+            f_loss += forked_loss.item()
             g_loss += graph_loss.item()
             self.gas -= g
             self.summary.add_scalar('time_taken', g, global_step=self.ticks)
             self.summary.add_scalars('loss', {
-                #'forked_loss': forked_loss.item(),
+                'forked_loss': forked_loss.item(),
                 'main_loss': graph_loss.item(),
             }, global_step=self.ticks)
             self.summary.add_histogram('y', y.numpy(), global_step=self.ticks)

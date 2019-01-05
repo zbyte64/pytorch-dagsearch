@@ -88,7 +88,7 @@ class LinearCell(BaseCell):
         return len(out_dim) == 1 or len(in_dim) == 1
 
     def get_param_options(self):
-        return [('activation', 0, 3)]
+        return [('activation', 0, 4)]
 
     def forward(self, x):
         params = self.get_param_dict()
@@ -98,7 +98,8 @@ class LinearCell(BaseCell):
             0: torch.relu,
             1: torch.tanh,
             2: torch.sigmoid,
-            3: lambda x: x,
+            3: torch.nn.LogSoftmax(dim=1),
+            4: lambda x: x,
         }[activation]
         x = a_f(self.f(x))
         return x.view(-1, *self.out_dim)
