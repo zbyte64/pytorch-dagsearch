@@ -37,8 +37,8 @@ class World(object):
         self.summary.add_graph(self.graph, next(self.test_data)[0])
 
     def rebuild(self):
-        self.graph = StackedGraph.from_graph(self.initial_graph)
-        self.forked_graph = StackedGraph.from_graph(self.initial_graph)
+        self.graph = copy.deepcopy(self.initial_graph)
+        self.forked_graph = copy.deepcopy(self.initial_graph)
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
         self.graph_optimizer.zero_grad()
         self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.1, momentum=0.9)
@@ -57,6 +57,8 @@ class World(object):
 
     @property
     def active_nodes(self):
+        if not hasattr(self.graph, 'stack'):
+            return list(self.graph.nodes.values())
         return self.graph.stack[-1]
 
     @property
@@ -69,6 +71,8 @@ class World(object):
 
     @property
     def node_key(self):
+        if not hasattr(self.graph, 'stack'):
+            return str(self.node_index)
         return str((len(self.graph.stack) - 1) * len(self.initial_graph.nodes) + self.node_index)
 
     @property
@@ -112,7 +116,7 @@ class World(object):
             self.param_index = 0
         _, p_min, p_max = self.get_param_options()[self.param_index]
         #TODO convey overall network shape
-        nav_state = torch.FloatTensor([
+        nav_state = torch.tensor([
             (param_state[self.param_index] - p_min) / p_max,
             cell_muted,
             input_muted,
@@ -125,7 +129,7 @@ class World(object):
             self.cell_index / len(self.current_node.cells),
             self.param_index / param_state.shape[0],
             self.input_index / len(self.input_nodes),
-        ])
+        ], dtype=torch.float32)
         return torch.cat([nav_state, graph_state, node_state, cell_state]).detach()
 
     def perform_action(self, action_idx):
@@ -253,8 +257,8 @@ class World(object):
     def train(self, iterations=1):
         f_loss = 0.
         g_loss = 0.
-        gf = self.graph.to(device)
-        ff = self.forked_graph.to(device)
+        self.graph.to(device).train()
+        self.forked_graph.to(device).train()
         for i in range(iterations):
             self.graph_optimizer.zero_grad()
             self.forked_graph_optimizer.zero_grad()
@@ -263,14 +267,15 @@ class World(object):
             vy = y.to(device)
 
             g = -time.time()
-            py = gf(vx)
+            py = self.graph(vx)
             graph_loss = self.criterion(py, vy)
             graph_loss.backward()
             self.graph_optimizer.step()
             g += time.time()
             self._graph_t_size = g
+            assert py.shape[1] == 10, str(py.shape)
 
-            forked_loss = self.criterion(ff(vx), vy)
+            forked_loss = self.criterion(self.forked_graph(vx), vy)
             forked_loss.backward()
             self.forked_graph_optimizer.step()
 

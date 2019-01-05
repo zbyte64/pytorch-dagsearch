@@ -85,13 +85,14 @@ class LinearCell(BaseCell):
         super(LinearCell, self).__init__(in_dim, out_dim, channel_dim)
         self.f = nn.Linear(np.prod(in_dim), np.prod(out_dim))
         self.add_module('f', self.f)
+        #self.mov_scramble(None)
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
         return len(out_dim) == 1 or len(in_dim) == 1
 
     def get_param_options(self):
-        return [('activation', 0, 4)]
+        return [('activation', 0, 2)]
     
     def forward(self, x):
         params = self.get_param_dict()
@@ -99,16 +100,15 @@ class LinearCell(BaseCell):
         activation = int(params['activation'])
         a_f = {
             0: torch.relu,
-            1: torch.tanh,
-            2: torch.sigmoid,
-            3: torch.nn.LogSoftmax(dim=1),
-            4: lambda x: x,
+            1: torch.sigmoid,
+            2: lambda x: x,
         }[activation]
         x = a_f(self.f(x))
         return x.view(-1, *self.out_dim)
 
     def mov_scramble(self, world):
-        nn.init.uniform_(self.f.weight)
+        self.f.reset_parameters()
+        #nn.init.uniform_(self.f.weight)
 
 
 @register_cell

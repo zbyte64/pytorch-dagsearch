@@ -1,5 +1,5 @@
 import os
-from dagsearch.dag import Graph
+from dagsearch.dag import Graph, StackedGraph
 from dagsearch.world import World
 from dagsearch.cells import CELL_TYPES
 from dagsearch.dag_env import DagSearchEnv
@@ -29,18 +29,12 @@ validata_loader = torch.utils.data.DataLoader(validata,
                                           batch_size=batch_size,
                                           shuffle=True,)
 
-g = Graph(cell_types, in_dim)
-g.create_node((28*28,))
-g.create_node((500,))
-g.create_node((256,))
-'''
-g.create_node((4, 28, 28))
-g.create_node((4, 28, 28))
-g.create_node((8, 20, 20))
-g.create_node((18, 8, 8))
-g.create_node((20,))
-'''
-g.create_node(out_dim)
+g = StackedGraph.from_sizes([
+ (28*28, ),
+ (500, ),
+ (256, ),
+ out_dim
+], cell_types, in_dim, channel_dim=1)
 x, _ = next(iter(data_loader))
 
 world = World(g, data_loader, validata_loader, nn.CrossEntropyLoss(), initial_gas=60*5)
@@ -53,8 +47,8 @@ trainer = Trainer(world, env)
 import copy
 if os.path.exists('./trainer.pth'):
     trainer.policy_net.load_state_dict(torch.load('./trainer.pth'))
-trainer.train(5)
-env.render()
+#trainer.train(5)
+#env.render()
 while True:
     trainer.train(1000)
     #env.render()

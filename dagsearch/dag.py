@@ -11,9 +11,9 @@ flatten = lambda x: x.view(x.shape[0], -1)
 
 def init_weights(m):
     if type(m) == nn.Linear:
-        nn.init.uniform_(m.weight)
+        nn.init.xavier_uniform_(m.weight)
     if type(m) == nn.Conv2d:
-        nn.init.xavier_uniform(m.weight)
+        nn.init.xavier_uniform_(m.weight)
 
 
 class Identity(nn.Module):
@@ -49,6 +49,7 @@ class Connector(nn.Module):
         self.out_volume = np.prod(self.out_dim)
         self.model = self.make_model()
         self.add_module('model', self.model)
+        self.apply(init_weights)
 
     def make_model(self):
         if self.out_dim == self.in_dim:
@@ -127,13 +128,13 @@ class Node(nn.Module):
             adaptor = Connector(in_node_or_dim, self.in_dim)
         if drop_out is not None:
             adaptor = nn.Sequential(adaptor, nn.Dropout(drop_out))
-        self.in_node_adapters[key] = adaptor
+        self.in_node_adapters.update({key: adaptor})
         if muteable:
             self.muted_inputs[key] = torch.tensor(1)
 
     def create_node_adapter(self, in_node):
         a = Connector(in_node.out_dim, self.in_dim)
-        a.apply(init_weights)
+        #a.apply(init_weights)
         return a
 
     def is_input_muted(self, node_id):
@@ -165,7 +166,7 @@ class Node(nn.Module):
         return out
 
     def observe(self):
-        return torch.FloatTensor([self.in_volume, self.out_volume, self._mean, self._std_dev])
+        return torch.tensor([self.in_volume, self.out_volume, self._mean, self._std_dev, len(self.in_dim), len(self.out_dim)], dtype=torch.float32)
 
     def actions(self):
         return [self.toggle_cell, self.toggle_input]
@@ -213,16 +214,16 @@ class Graph(nn.Module):
         self.register_node(key, node)
         return node
 
-    def register_node(self, key, node):
+    def register_node(self, key, node, link_previous=True):
         key = str(key)
         assert key not in self.nodes
-        if len(self.nodes):
-            last_key, last_node = list(self.nodes.items())[-1]
-            node.register_input(last_key, last_node, muteable=False)
-        else:
-            node.register_input('input', self.in_dim, muteable=False)
-        self.nodes[key] = node
-
+        if link_previous:
+            if len(self.nodes):
+                last_key, last_node = list(self.nodes.items())[-1]
+                node.register_input(last_key, last_node, muteable=False)
+            else:
+                node.register_input('input', self.in_dim, muteable=False)
+        self.nodes.update({key: node})
 
     def observe(self):
         return torch.FloatTensor([self.in_volume, len(self.nodes)])
@@ -279,45 +280,38 @@ class StackedGraph(Graph):
         self.expand()
 
     @classmethod
-    def from_graph(cls, graph):
+    def from_sizes(cls, sizes, cell_types, in_dim, channel_dim=1):
         '''
-        Convert an existing graph into a stackable graph,
-        each new layer is a copy of the graph but randomized
+        Creates layers specified by sizes and adds as a stack
+        each new layer is set to train
         Only connects new nodes in a linear fashion!
         '''
-        template_nodes = list(graph.nodes.values())
         def make_layer(self):
-            nodes = copy.deepcopy(template_nodes)
-            #randomize
-            list(map(lambda x: x.apply(init_weights), nodes))
             if len(self.nodes):
-                priors = list(self.nodes.items())[-len(nodes):]
+                priors = list(self.nodes.items())[-len(sizes):]
             else:
                 priors = None
-            keys = map(str, range(len(self.nodes), len(self.nodes)+len(nodes)))
+            keys = map(str, range(len(self.nodes), len(self.nodes)+len(sizes)))
             #reflow links
             last_chain = 'input', self.in_dim
-            for key, t_node in zip(keys, nodes):
-                t_node.in_node_adapters = nn.ModuleDict()
+            nodes = list()
+            for key, size in zip(keys, sizes):
+                in_dim = last_chain[1]
+                t_node = Node(in_nodes={}, in_dim=in_dim, out_dim=size, channel_dim=self.channel_dim, cell_types=self.cell_types)
                 if priors:
                     p_key, p_node = priors.pop(0)
+                    p_node.eval()
                     t_node.register_input(p_key, p_node, muteable=False)
                 t_node.register_input(*last_chain, muteable=False)
-                last_chain = (key, t_node)
-                self.register_node(key, t_node)
+                #t_node.apply(init_weights)
+                #t_node.train()
+                last_chain = (key, t_node.out_dim)
+                self.register_node(key, t_node, link_previous=False)
+                nodes.append(t_node)
             return nodes
-        return cls(make_layer, graph.cell_types, graph.in_dim, graph.channel_dim)
-
+        return cls(make_layer, cell_types, in_dim, channel_dim)
+    
     def expand(self):
         new_nodes = self.make_layer(self)
-        list(map(lambda x: x.train(), new_nodes))
-        #new_layer.randomize_state()
-        if len(self.stack):
-            previous_frozen_nodes = list(map(self._freeze, self.stack[-1]))
         self.stack.append(new_nodes)
 
-    def _freeze(self, g):
-        for param in g.parameters():
-            param.requires_grad = False
-        g.eval()
-        return g
