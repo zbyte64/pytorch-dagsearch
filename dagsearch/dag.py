@@ -129,7 +129,7 @@ class Node(nn.Module):
             adaptor = nn.Sequential(adaptor, nn.Dropout(drop_out))
         self.in_node_adapters[key] = adaptor
         if muteable:
-            self.muted_inputs[key] = torch.tensor(-1)
+            self.muted_inputs[key] = torch.tensor(1)
 
     def create_node_adapter(self, in_node):
         a = Connector(in_node.out_dim, self.in_dim)
@@ -137,21 +137,9 @@ class Node(nn.Module):
         return a
 
     def is_input_muted(self, node_id):
-        return self.muted_inputs.get(node_id, -1) > 0
+        return node_id not in self.in_node_adapters or self.muted_inputs.get(node_id, -1) > 0
 
-    def forward(self, x_list):
-        x_ts = []
-        for x_i, (node_id, a) in zip(x_list, self.in_node_adapters.items()):
-            if not self.is_input_muted(node_id):
-                x_i = a(x_i)
-                assert x_i.shape[1:] == self.in_dim, '%s != %s (from %s)' % (x_i.shape, self.in_dim, node_id)
-                x_ts.append(x_i)
-        if len(x_ts) > 1:
-            x = torch.sum(torch.stack(x_ts, dim=self.channel_dim), dim=self.channel_dim)
-        else:
-            assert len(x_ts), '%s <> %s' % (x_dict.keys(), self.in_node_adapters.keys())
-            x = x_ts[0]
-        assert x.shape[1:] == self.in_dim
+    def forward(self, x):
         #print('Node connect:', x.shape, self.in_dim, self.out_dim)
         active_sensors = filter(lambda e: self.muted_cells[e[0]], enumerate(self.cells))
         active_sensors = list(active_sensors)
@@ -195,8 +183,6 @@ class Node(nn.Module):
         key = str(key)
         if key in self.muted_inputs:
             self.muted_inputs[key] *= 1
-        else:
-            self.register_input(key, world.graph.nodes[key])
 
 
 class Graph(nn.Module):
@@ -228,9 +214,15 @@ class Graph(nn.Module):
         return node
 
     def register_node(self, key, node):
-        if not len(self.nodes):
+        key = str(key)
+        assert key not in self.nodes
+        if len(self.nodes):
+            last_key, last_node = list(self.nodes.items())[-1]
+            node.register_input(last_key, last_node, muteable=False)
+        else:
             node.register_input('input', self.in_dim, muteable=False)
         self.nodes[key] = node
+
 
     def observe(self):
         return torch.FloatTensor([self.in_volume, len(self.nodes)])
@@ -243,17 +235,23 @@ class Graph(nn.Module):
             #otherwise we have been suplied input from another network
             assert 'input' in x
         for key, node in self.nodes.items():
-            inputs = [outputs[k] for k in node.in_node_adapters.keys()]
+            assert key not in outputs
+            inputs = [a(outputs[k]) for k, a in node.in_node_adapters.items() if not node.is_input_muted(k)]
+            assert len(inputs)
+            if len(inputs) > 1:
+                x = torch.sum(torch.stack(inputs, dim=self.channel_dim), dim=self.channel_dim)
+            else:
+                x = inputs[0]
+            assert x.shape[1:] == node.in_dim
             try:
-                n_x = node(inputs)
+                x = node(x)
             except:
                 print(outputs.keys())
                 print(key)
                 print(node.in_dim)
                 print(node.in_node_adapters)
                 raise
-            outputs[key] = n_x
-        x = n_x
+            outputs[key] = x
         return x
 
     @classmethod

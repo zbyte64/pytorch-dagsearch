@@ -276,7 +276,7 @@ class World(object):
 
             self._graph_loss += graph_loss.item()
             self._forked_graph_loss += forked_loss.item()
-            
+
             f_loss += forked_loss.item()
             g_loss += graph_loss.item()
             self.gas -= g
