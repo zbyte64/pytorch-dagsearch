@@ -11,7 +11,7 @@ import time
 from tensorboardX import SummaryWriter
 
 from .dag import StackedGraph
-
+from .env import *
 
 def inf_data(dataloader):
     i = None
@@ -29,11 +29,11 @@ class World(object):
         super(World, self).__init__()
         self.initial_graph = graph
         self.initial_gas = initial_gas
-        self.rebuild()
         self.criterion = loss_fn
         self.test_data = inf_data(test_dataloader)
         self.valid_data = inf_data(valid_dataloader)
         self.summary = SummaryWriter()
+        self.rebuild()
         #self.summary.add_graph(graph)
 
     def rebuild(self):
@@ -172,7 +172,7 @@ class World(object):
         self.page_cell(world, 0)
 
     def page_cell(self, world, direction):
-        self.cell_index = self._move(self.cell_index, direction, 0, len(self.graph.cell_types)-1)
+        self.cell_index = self._move(self.cell_index, direction, 0, len(self.current_node.cells)-1)
         #refresh param position
         self.page_param(world, 0)
 
@@ -254,30 +254,33 @@ class World(object):
     def train(self, iterations=1):
         f_loss = 0.
         g_loss = 0.
+        gf = self.graph.to(device)
+        ff = self.forked_graph.to(device)
         for i in range(iterations):
             x, y = next(self.test_data)
+            vx = x.to(device)
+            vy = y.to(device)
 
             g = -time.time()
-            py = self.graph(x)
-            graph_loss = self.criterion(py, y)
+            py = gf(vx)
+            graph_loss = self.criterion(py, vy)
             graph_loss.backward()
             self.graph_optimizer.step()
             g += time.time()
             self._graph_t_size = g
 
-            forked_loss = self.criterion(self.forked_graph(x), y)
+            forked_loss = self.criterion(ff(vx), vy)
             forked_loss.backward()
             self.forked_graph_optimizer.step()
 
             self._graph_loss += graph_loss.item()
             self._forked_graph_loss += forked_loss.item()
-
-            #update energy
-            volume = sum(map(lambda x: np.prod(x.size()), self.graph.parameters()))
-            self.negative_entropy += np.log(volume)
+            
             f_loss += forked_loss.item()
             g_loss += graph_loss.item()
             self.gas -= g
+            if f_loss in (float('inf'), float('nan')):
+                self.gas = -1.
             self.summary.add_scalar('time_taken', g, global_step=self.ticks)
             self.summary.add_scalars('loss', {
                 'forked_loss': forked_loss.item(),
@@ -285,7 +288,7 @@ class World(object):
             }, global_step=self.ticks)
             self.summary.add_histogram('y', y.numpy(), global_step=self.ticks)
             try:
-                self.summary.add_histogram('predicted_y', py.detach().numpy(), global_step=self.ticks)
+                self.summary.add_histogram('predicted_y', py.cpu().detach().numpy(), global_step=self.ticks)
             except:
                 print('py has gone cray cray')
                 self.gas = -1.

@@ -5,6 +5,8 @@ from torch.autograd import Variable
 import numpy as np
 import random
 
+from .env import *
+
 
 def make_one_hot(labels, num_classes):
     y = torch.eye(num_classes)
@@ -68,7 +70,7 @@ class BaseCell(nn.Module):
         return {k: float(self.param_state[i]) for i, (k, _n, _x) in enumerate(self.get_param_options())}
 
     def actions(self):
-        return []#self.mov_scramble]
+        return [self.mov_scramble]
 
     def mov_scramble(self, world):
         '''
@@ -82,6 +84,7 @@ class LinearCell(BaseCell):
     def __init__(self, in_dim, out_dim, channel_dim):
         super(LinearCell, self).__init__(in_dim, out_dim, channel_dim)
         self.f = nn.Linear(np.prod(in_dim), np.prod(out_dim))
+        self.add_module('f', self.f)
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
@@ -89,7 +92,7 @@ class LinearCell(BaseCell):
 
     def get_param_options(self):
         return [('activation', 0, 4)]
-
+    
     def forward(self, x):
         params = self.get_param_dict()
         x = x.view(x.shape[0], -1)
@@ -114,7 +117,7 @@ class Conv2dCell(BaseCell):
     #CONSIDER: we can oversize our kernel and slice down, allowing for agent to change size or stride
     def __init__(self, in_dim, out_dim, channel_dim):
         super(Conv2dCell, self).__init__(in_dim, out_dim, channel_dim)
-        self.weights = torch.nn.Parameter(torch.ones((
+        self.weights = nn.Parameter(torch.ones((
             out_dim[channel_dim-1],
             in_dim[channel_dim-1],
             self.max_kernel_size, self.max_kernel_size)))
@@ -208,10 +211,10 @@ class DeConv2dCell(BaseCell):
     #CONSIDER: we can oversize our kernel and slice down, allowing for agent to change size or stride
     def __init__(self, in_dim, out_dim, channel_dim):
         super(DeConv2dCell, self).__init__(in_dim, out_dim, channel_dim)
-        self.weights = torch.ones((
+        self.weights = nn.Parameter(torch.ones((
             in_dim[channel_dim-1],
             out_dim[channel_dim-1],
-            self.max_kernel_size, self.max_kernel_size), requires_grad=True)
+            self.max_kernel_size, self.max_kernel_size)))
         nn.init.xavier_uniform_(self.weights)
 
     @staticmethod
@@ -231,7 +234,7 @@ class DeConv2dCell(BaseCell):
         kernel_size = int(params['kernel'])
         stride = min(int(params['stride']), kernel_size)
         dilation = int(params['dilation'])
-        kernel = self.weights
+        kernel = self.weights.to(device)
         if kernel_size < self.max_kernel_size:
             kernel = torch.narrow(kernel, 2, 0, kernel_size)
             kernel = torch.narrow(kernel, 3, 0, kernel_size)

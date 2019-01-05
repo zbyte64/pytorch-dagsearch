@@ -11,14 +11,14 @@ import matplotlib.pyplot as plt
 
 from torch import nn
 import torch
-from torchviz import make_dot, make_dot_from_trace
+#from torchviz import make_dot, make_dot_from_trace
 
 cell_types = list(CELL_TYPES.keys())
 
 
 in_dim = (1, 28, 28)
 out_dim = (10,)
-batch_size = 32
+batch_size = 1024
 final_image_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (1.0,))
@@ -44,10 +44,10 @@ g.create_node((18, 8, 8))
 g.create_node((20,))
 '''
 g.create_node(out_dim)
-x, _ = next(iter(data_loader))
+#x, _ = next(iter(data_loader))
 #dot = make_dot(g(x), params=dict(g.named_parameters()))
 #dot.view()
-world = World(g, data_loader, validata_loader, nn.CrossEntropyLoss(), initial_gas=30)
+world = World(g, data_loader, validata_loader, nn.CrossEntropyLoss(), initial_gas=60*5)
 
 print(world.actions())
 print(world.observe())
@@ -57,7 +57,8 @@ env = DagSearchEnv(world)
 trainer = Trainer(world, env)
 if os.path.exists('./trainer.pth'):
     trainer.policy_net.load_state_dict(torch.load('./trainer.pth'))
-trainer.train(10000)
-env.render()
-print(trainer.score_board)
-torch.save(trainer.policy_net.state_dict(), './trainer.pth')
+while True:
+    trainer.train(10000)
+    #env.render()
+    print('saving...')
+    torch.save(trainer.policy_net.state_dict(), './trainer.pth')

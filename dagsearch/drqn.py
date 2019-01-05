@@ -11,9 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-
-# if gpu is to be used
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from .env import *
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
@@ -51,6 +49,10 @@ class DRQN(nn.Module):
         self.lstm = nn.LSTM(self.embedding_size, self.hidden_size,
             num_layers=num_layers, batch_first=True)
         self.head = nn.Linear(self.hidden_size*num_layers, action_size)
+        self.add_module('f1', self.f1)
+        self.add_module('f2', self.f2)
+        self.add_module('lstm', self.lstm)
+        self.add_module('head', self.head)
 
     def forward(self, x, hidden):
         x = F.relu(self.f1(x))
@@ -76,16 +78,16 @@ class Trainer(object):
         self.action_size = len(world.actions())
         self.hidden_size = 100
         self.hidden_layers = 1
-        self.policy_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers)
-        self.target_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers)
+        self.policy_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
+        self.target_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
         self.memory = ReplayMemory(10000)
         self.optimizer = optim.RMSprop(self.policy_net.parameters())
         self.optimizer.zero_grad()
         self.steps_done = 0
         self.score_board = []
         self._hidden_state = (
-            torch.zeros(self.hidden_layers, 1, self.hidden_size),
-            torch.zeros(self.hidden_layers, 1, self.hidden_size)
+            torch.zeros(self.hidden_layers, 1, self.hidden_size).to(device),
+            torch.zeros(self.hidden_layers, 1, self.hidden_size).to(device)
         )
 
     def select_action(self, state):
@@ -95,16 +97,17 @@ class Trainer(object):
         self.steps_done += 1
         if sample > eps_threshold:
             with torch.no_grad():
-                y, hidden = self.policy_net(state, self._hidden_state)
+                y, hidden = self.policy_net(state.to(device), self._hidden_state)
                 a = y.max(1, keepdim=True)[1]
+                self._hidden_state = hidden
                 return a, hidden
         else:
             self._hidden_state = (
-                torch.zeros(self.hidden_layers, 1, self.hidden_size),
-                torch.zeros(self.hidden_layers, 1, self.hidden_size)
+                torch.zeros(self.hidden_layers, 1, self.hidden_size).to(device),
+                torch.zeros(self.hidden_layers, 1, self.hidden_size).to(device)
             )
             return (
-                torch.from_numpy(np.array([[self.env.action_space.sample()]])),
+                torch.tensor([[self.env.action_space.sample()]], dtype=torch.int64),
                 self._hidden_state
             )
 
@@ -122,21 +125,21 @@ class Trainer(object):
         non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
                                               batch.next_state)), device=device, dtype=torch.uint8)
         non_final_next_states = torch.cat([s for s in batch.next_state
-                                                    if s is not None])
-        state_batch = torch.cat(batch.state)
-        action_batch = torch.cat(batch.action)
-        reward_batch = torch.from_numpy(np.array(batch.reward, dtype=np.float32))
+                                                    if s is not None]).to(device)
+        state_batch = torch.cat(batch.state).to(device)
+        action_batch = torch.cat(batch.action).to(device)
+        reward_batch = torch.tensor(batch.reward, dtype=torch.float32).to(device)
         #print(state_batch.shape, action_batch.shape)
         #print(action_batch)
         hidden_state = (
-            torch.zeros(self.hidden_layers, BATCH_SIZE, self.hidden_size),
-            torch.zeros(self.hidden_layers, BATCH_SIZE, self.hidden_size)
+            torch.zeros(self.hidden_layers, BATCH_SIZE, self.hidden_size).to(device),
+            torch.zeros(self.hidden_layers, BATCH_SIZE, self.hidden_size).to(device)
         )
         #TODO this emits a state which can be fed into target net, but should be the same?
         state_action_values, next_hidden_state = self.policy_net(state_batch, hidden_state)
         state_action_values = state_action_values.gather(1, action_batch)
 
-        next_state_values = torch.zeros(BATCH_SIZE)
+        next_state_values = torch.zeros(BATCH_SIZE).to(device)
         #next_hidden_state = torch.cat([h for s, h in zip(batch.next_state, batch.hidden_state)
         #                                            if s is not None])
         next_state_values[non_final_mask] = self.target_net(non_final_next_states, next_hidden_state)[0].max(1)[0].detach()
@@ -164,15 +167,14 @@ class Trainer(object):
         for i in range(iterations):
             # Select and perform an action
             action, self._hidden_state = self.select_action(state)
-            ob, reward, episode_over, info = self.env.step(action.item())
+            assert action.dtype == torch.int64, str(action.dtype)
+            ob, reward, episode_over, info = self.env.step(int(action.item()))
             if episode_over:
                 print('episode over')
-            else:
-                print('Reward %.3f , Loss %.4f , Gas %.2f' % (reward, info['loss'], info['gas']))
             #print(action.item(), reward, episode_over, info)
             next_state = ob
             # Store the transition in memory
-            self.memory.push(state, action, next_state, reward)
+            self.memory.push(state, action.to(device), next_state, reward)
             state = next_state
 
             # Perform one step of the optimization (on the target network)
@@ -180,6 +182,7 @@ class Trainer(object):
             # Update the target network, copying all weights and biases in DQN
             if i % TARGET_UPDATE == 0:
                 self.target_net.load_state_dict(self.policy_net.state_dict())
+                print('Reward %.3f , Loss %.4f , Gas %.2f' % (reward, info['loss'], info['gas']))
             if episode_over:
                 self.score_model()
                 self.env.reset()
@@ -188,6 +191,8 @@ class Trainer(object):
         #self.world.mov_fork(self.world)
         valid_data = next(self.world.valid_data)
         x, y = valid_data
+        x = x.to(device)
+        y = y.to(device)
         py = self.world.graph(x)
         loss = self.world.criterion(py, y)
         print('Validation loss:', loss)

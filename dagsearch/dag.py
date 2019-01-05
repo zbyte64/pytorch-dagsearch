@@ -48,6 +48,7 @@ class Connector(nn.Module):
         self.in_volume = np.prod(self.in_dim)
         self.out_volume = np.prod(self.out_dim)
         self.model = self.make_model()
+        self.add_module('model', self.model)
 
     def make_model(self):
         if self.out_dim == self.in_dim:
@@ -115,6 +116,9 @@ class Node(nn.Module):
             self.register_input(key, in_node)
         if in_nodes:
             self.muted_inputs.pop(key)
+        self.add_module('cells', self.cells)
+        self.add_module('in_node_adapters', self.in_node_adapters)
+        self._mean, self._std_dev = 0.0, 0.0
 
     def register_input(self, key, in_node_or_dim, drop_out=None, muteable=True):
         if isinstance(in_node_or_dim, Node):
@@ -171,10 +175,12 @@ class Node(nn.Module):
             out = matched_outputs[0]
         assert out.shape[0] == x.shape[0], str(out.shape)
         assert out.shape[1:] == self.out_dim, '%s != %s' % (out.shape, self.out_dim)
+        self._mean = torch.mean(out).item()
+        self._std_dev = torch.std(out).item()
         return out
 
     def observe(self):
-        return torch.FloatTensor([self.in_volume, self.out_volume])
+        return torch.FloatTensor([self.in_volume, self.out_volume, self._mean, self._std_dev])
 
     def actions(self):
         return [self.toggle_cell, self.toggle_input]
@@ -209,6 +215,7 @@ class Graph(nn.Module):
         self.in_volume = np.prod(in_dim)
         self.channel_dim = channel_dim
         self.nodes = nn.ModuleDict()
+        self.add_module('nodes', self.nodes)
 
     def create_node(self, out_dim, cell_types=None, key=None):
         if key is None:
