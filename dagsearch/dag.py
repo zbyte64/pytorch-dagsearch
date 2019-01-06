@@ -5,6 +5,7 @@ import torch.optim as optim
 import numpy as np
 import random
 import copy
+from collections import OrderedDict
 
 
 flatten = lambda x: x.view(x.shape[0], -1)
@@ -99,7 +100,7 @@ class Connector(nn.Module):
 
 
 class Node(nn.Module):
-    def __init__(self, in_nodes, cell_types, in_dim, out_dim, channel_dim=1):
+    def __init__(self, cell_types, in_dim, out_dim, channel_dim=1):
         super(Node, self).__init__()
         _a = (in_dim, out_dim, channel_dim)
         self.cells = nn.ModuleList([s(*_a) for s in filter(lambda s: s.valid(*_a), cell_types)])
@@ -113,29 +114,27 @@ class Node(nn.Module):
         self.out_volume = np.prod(out_dim)
         self.channel_dim = channel_dim
         self.in_node_adapters = nn.ModuleDict()
+        self.add_module('cells', self.cells)
+        self.add_module('in_node_adapters', self.in_node_adapters)
+        self._mean, self._std_dev = 0.0, 0.0
+    
+    def register_input_nodes(self, in_nodes):
         for key, in_node in in_nodes.items():
             self.register_input(key, in_node)
         if in_nodes:
             self.muted_inputs.pop(key)
-        self.add_module('cells', self.cells)
-        self.add_module('in_node_adapters', self.in_node_adapters)
-        self._mean, self._std_dev = 0.0, 0.0
 
     def register_input(self, key, in_node_or_dim, drop_out=None, muteable=True):
         if isinstance(in_node_or_dim, Node):
-            adaptor = self.create_node_adapter(in_node_or_dim)
+            adaptor = Connector(in_node_or_dim.out_dim, self.in_dim)
         else:
+            assert isinstance(in_node_or_dim, (tuple, list))
             adaptor = Connector(in_node_or_dim, self.in_dim)
         if drop_out is not None:
             adaptor = nn.Sequential(adaptor, nn.Dropout(drop_out))
         self.in_node_adapters.update({key: adaptor})
         if muteable:
             self.muted_inputs[key] = torch.tensor(1)
-
-    def create_node_adapter(self, in_node):
-        a = Connector(in_node.out_dim, self.in_dim)
-        #a.apply(init_weights)
-        return a
 
     def is_input_muted(self, node_id):
         return node_id not in self.in_node_adapters or self.muted_inputs.get(node_id, -1) > 0
@@ -197,7 +196,7 @@ class Graph(nn.Module):
         self.nodes = nn.ModuleDict()
         self.add_module('nodes', self.nodes)
 
-    def create_node(self, out_dim, cell_types=None, key=None):
+    def create_node(self, out_dim, cell_types=None, key=None, link_previous=True):
         if key is None:
             key = str(len(self.nodes))
         cell_types = cell_types or self.cell_types
@@ -205,20 +204,17 @@ class Graph(nn.Module):
         if in_nodes:
             in_dim = list(in_nodes.values())[-1].out_dim
         else:
+            in_nodes = [('input', self.in_dim)]
             in_dim = self.in_dim
-        node = Node(in_nodes=in_nodes, in_dim=in_dim, out_dim=out_dim, channel_dim=self.channel_dim, cell_types=cell_types)
+        node = Node(in_dim=in_dim, out_dim=out_dim, channel_dim=self.channel_dim, cell_types=cell_types)
+        if link_previous:
+            node.register_input_nodes(in_nodes)
         self.register_node(key, node)
         return node
 
-    def register_node(self, key, node, link_previous=True):
+    def register_node(self, key, node):
         key = str(key)
         assert key not in self.nodes
-        if link_previous:
-            if len(self.nodes):
-                last_key, last_node = list(self.nodes.items())[-1]
-                node.register_input(last_key, last_node, muteable=False)
-            else:
-                node.register_input('input', self.in_dim, muteable=False)
         self.nodes.update({key: node})
 
     def observe(self):
@@ -239,7 +235,7 @@ class Graph(nn.Module):
                 x = torch.sum(torch.stack(inputs, dim=self.channel_dim), dim=self.channel_dim)
             else:
                 x = inputs[0]
-            assert x.shape[1:] == node.in_dim
+            assert x.shape[1:] == node.in_dim, str((x.shape, key, len(inputs), len(node.in_node_adapters)))
             try:
                 x = node(x)
             except:
@@ -289,22 +285,22 @@ class StackedGraph(Graph):
                 priors = None
             keys = map(str, range(len(self.nodes), len(self.nodes)+len(sizes)))
             #reflow links
-            last_chain = 'input', self.in_dim
-            nodes = list()
+            nodes = OrderedDict()
+            in_dim = self.in_dim
             for key, size in zip(keys, sizes):
-                in_dim = last_chain[1]
-                t_node = Node(in_nodes={}, in_dim=in_dim, out_dim=size, channel_dim=self.channel_dim, cell_types=self.cell_types)
+                t_node = Node(in_dim=in_dim, out_dim=size, channel_dim=self.channel_dim, cell_types=self.cell_types)
                 if priors:
                     p_key, p_node = priors.pop(0)
                     p_node.eval()
                     t_node.register_input(p_key, p_node, muteable=False)
-                t_node.register_input(*last_chain, muteable=False)
-                #t_node.apply(init_weights)
-                #t_node.train()
-                last_chain = (key, t_node.out_dim)
-                self.register_node(key, t_node, link_previous=False)
-                nodes.append(t_node)
-            return nodes
+                if len(nodes):
+                    t_node.register_input_nodes(nodes)
+                else:
+                    t_node.register_input('input', in_dim, muteable=False)
+                self.register_node(key, t_node)
+                nodes[key] = t_node
+                in_dim = t_node.out_dim
+            return list(nodes.values())
         return cls(make_layer, cell_types, in_dim, channel_dim)
     
     def expand(self):

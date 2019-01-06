@@ -145,7 +145,7 @@ class Trainer(object):
         #print(state_action_values.shape, expected_state_action_values.shape)
         loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
         _loss = float(loss.item())
-        assert _loss != float('nan') and _loss > 0., str(expected_state_action_values)
+        assert _loss > 0., '%s' % (expected_state_action_values, reward_batch, next_state_values)
         
         # Optimize the model
         loss.backward()
