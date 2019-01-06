@@ -69,15 +69,6 @@ class BaseCell(nn.Module):
     def get_param_dict(self):
         return {k: float(self.param_state[i]) for i, (k, _n, _x) in enumerate(self.get_param_options())}
 
-    def actions(self):
-        return [self.mov_scramble]
-
-    def mov_scramble(self, world):
-        '''
-        Randomize the weights
-        '''
-        pass
-
 
 @register_cell
 class LinearCell(BaseCell):
@@ -85,7 +76,6 @@ class LinearCell(BaseCell):
         super(LinearCell, self).__init__(in_dim, out_dim, channel_dim)
         self.f = nn.Linear(np.prod(in_dim), np.prod(out_dim))
         self.add_module('f', self.f)
-        #self.mov_scramble(None)
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
@@ -106,10 +96,6 @@ class LinearCell(BaseCell):
         x = a_f(self.f(x))
         return x.view(-1, *self.out_dim)
 
-    def mov_scramble(self, world):
-        self.f.reset_parameters()
-        #nn.init.uniform_(self.f.weight)
-
 
 @register_cell
 class Conv2dCell(BaseCell):
@@ -121,7 +107,6 @@ class Conv2dCell(BaseCell):
             out_dim[channel_dim-1],
             in_dim[channel_dim-1],
             self.max_kernel_size, self.max_kernel_size)))
-        nn.init.xavier_uniform_(self.weights)
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
@@ -171,9 +156,6 @@ class Conv2dCell(BaseCell):
         x = pad_to_match(x, self.out_dim)
         return x
 
-    def mov_scramble(self, world):
-        nn.init.xavier_uniform_(self.weights)
-
 
 @register_cell
 class Pooling2dCell(BaseCell):
@@ -215,7 +197,6 @@ class DeConv2dCell(BaseCell):
             in_dim[channel_dim-1],
             out_dim[channel_dim-1],
             self.max_kernel_size, self.max_kernel_size)))
-        nn.init.xavier_uniform_(self.weights)
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
@@ -242,5 +223,3 @@ class DeConv2dCell(BaseCell):
         x = pad_to_match(x, self.out_dim)
         return x
 
-    def mov_scramble(self, world):
-        nn.init.xavier_uniform_(self.weights)

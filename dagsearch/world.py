@@ -40,19 +40,18 @@ class World(object):
         self.graph = copy.deepcopy(self.initial_graph)
         self.forked_graph = copy.deepcopy(self.initial_graph)
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
-        self.graph_optimizer.zero_grad()
-        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.1, momentum=0.9)
-        self.forked_graph_optimizer.zero_grad()
+        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.0001, momentum=0.9)
         self._graph_loss = 0.0
         self._forked_graph_loss = 0.0
-        self.cooldown = 0
+        self.cooldown = 80
         self.node_index = 0
         self.cell_index = 0
         self.param_index = 0
         self.input_index = -1
-        self.param_state = torch.zeros(3)
+        self.param_state = torch.zeros(4)
         self.gas = self.initial_gas
         self.current_loss = 0.
+        self.lowest_loss = 0.
         self.ticks = 0
 
     @property
@@ -91,6 +90,7 @@ class World(object):
             ('new_cell_scale1', -4, 4),
             ('new_cell_scale2', -4, 4),
             ('learning_rate', 0, 8),
+            ('initializer', 0, 4),
         ]
         options.extend(self.current_cell.get_param_options())
         return options
@@ -123,12 +123,14 @@ class World(object):
             self.current_loss,
             self.ticks,
             self.gas / self.initial_gas,
-            self.cooldown / 20,
+            self.cooldown / 100,
             len(self.graph.nodes) / 10,
             self.node_index / len(self.active_nodes),
             self.cell_index / len(self.current_node.cells),
             self.param_index / param_state.shape[0],
             self.input_index / len(self.input_nodes),
+            len(self.graph.nodes),
+            len(self.graph.in_dim),
         ], dtype=torch.float32)
         return torch.cat([nav_state, graph_state, node_state, cell_state]).detach()
 
@@ -137,7 +139,7 @@ class World(object):
         action_idx: [0, n_actions]
         direction: [-1, 1]
         '''
-        if self.cooldown:
+        if self.cooldown > 0:
             self.cooldown -= 1
         actions = self.actions()
         #print('Action:', actions[action_idx], direction)
@@ -148,16 +150,15 @@ class World(object):
         return (len(actions), )
 
     @lru_cache()
-    def nav_actions(self):
-        a = [self.mov_param_up, self.mov_param_down, self.mov_add_stack]
+    def _actions(self):
+        a = [self.mov_param_up, self.mov_param_down, self.mov_add_stack, self.mov_fork, self.mov_randomize_input_adaptor, self.mov_randomize_cell]
         for f in [self.page_node, self.page_cell, self.page_param, self.page_input]:
             a.append(partial(f, direction=-1))
             a.append(partial(f, direction=1))
         return a
 
     def actions(self):
-        nav_actions = self.nav_actions()
-        actions = nav_actions + self.current_node.actions() + self.current_cell.actions()
+        actions = self._actions() + self.current_node.actions()
         return actions
 
     def _move(self, v, direction, _min, _max):
@@ -220,32 +221,31 @@ class World(object):
         #TODO compare accuracy with validation set?
         #keep_current = self._graph_loss * ( (direction + 2) / 2) < (self._forked_graph_loss * 0.97)
         keep_current = self._graph_loss < (self._forked_graph_loss * 0.9999)
-        reward = -1.
         if keep_current:
-            reward = 1.
+            reward = self._forked_graph_loss - self._graph_loss
+        else:
+            reward = -self.current_loss
         self.fork_graph(keep_current)
+        self._forked_graph_loss = 0.0
+        self._graph_loss = 0.0
         self.page_node(world, 0)
-        self.cooldown = 20
+        self.cooldown = 50
         return reward
 
     def fork_graph(self, keep_current=False):
-        if self.cooldown:
-            return
         print('#'*20)
         print('fork graph', keep_current)
         if keep_current:
+            print('!'*20, 'Success!')
             winner = self.graph
         else:
             winner = self.forked_graph
             self.graph_optimizer = self.forked_graph_optimizer
         self.graph = winner
         self.forked_graph = copy.deepcopy(winner)
-        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.1, momentum=0.9)
+        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.0001, momentum=0.9)
         #copy gradients?
         self.forked_graph_optimizer.load_state_dict(self.graph_optimizer.state_dict())
-        self._forked_graph_loss = 0.0
-        self._graph_loss = 0.0
-        self.cooldown = 20
 
     def adjust_learning_rate(self, lr):
         #lr = args.lr * (0.1 ** (epoch // 30))
@@ -257,8 +257,8 @@ class World(object):
     def train(self, iterations=1):
         f_loss = 0.
         g_loss = 0.
-        self.graph.to(device).train()
-        self.forked_graph.to(device).train()
+        self.graph.to(device)
+        self.forked_graph.to(device)
         for i in range(iterations):
             self.graph_optimizer.zero_grad()
             self.forked_graph_optimizer.zero_grad()
@@ -272,8 +272,6 @@ class World(object):
             graph_loss.backward()
             self.graph_optimizer.step()
             g += time.time()
-            self._graph_t_size = g
-            assert py.shape[1] == 10, str(py.shape)
 
             forked_loss = self.criterion(self.forked_graph(vx), vy)
             forked_loss.backward()
@@ -285,8 +283,11 @@ class World(object):
             f_loss += forked_loss.item()
             g_loss += graph_loss.item()
             self.gas -= g
-            if f_loss in (float('inf'), float('nan')):
-                self.gas = -1.
+            abort = False
+            reset = False
+            if g_loss in (float('inf'), float('nan')):
+                reset = True
+                abort = f_loss in (float('inf'), float('nan'))
             self.summary.add_scalar('time_taken', g, global_step=self.ticks)
             self.summary.add_scalars('loss', {
                 'forked_loss': forked_loss.item(),
@@ -296,13 +297,42 @@ class World(object):
             try:
                 self.summary.add_histogram('predicted_y', py.cpu().detach().numpy(), global_step=self.ticks)
             except:
-                print('py has gone cray cray')
-                self.gas = -1.
+                abort = True
             #images = x[0]
             #self.summary.add_images('x', images, global_step=self.ticks)
             self.ticks += 1
+            if abort or reset:
+                if abort:
+                    self.gas = -1.
+                else:
+                    self.fork_graph()
+                return {
+                    'delta_loss': 0.,
+                    'loss': 0.,
+                    'forked_loss': 0.,
+                    'gas': self.gas,
+                    'reward': -1.
+                }
+        reward = 0.
+        if self.lowest_loss is None:
+            self.lowest_loss = g_loss
+        elif self.lowest_loss > g_loss:
+            l_delta = self.lowest_loss - g_loss
+            reward = 1. + l_delta
+            self.lowest_loss = g_loss
+            self.gas += l_delta * self.initial_gas
+        if self.gas < 0:
+            #add final score
+            reward -= g_loss
+        reward = np.tanh(reward)
+        info = {
+            'loss': g_loss,
+            'forked_loss': f_loss,
+            'gas': self.gas,
+            'reward': reward
+        }
         self.current_loss = g_loss
-        return (g_loss, f_loss)
+        return info
 
     def draw(self):
         G = nx.OrderedDiGraph()
@@ -325,9 +355,39 @@ class World(object):
     def mov_add_stack(self, world):
         if self.cooldown:
             return
-        if self._graph_loss > 1.0:
+        if not self.current_loss or self.current_loss > 1.0:
             return
         print('#'*20)
         print('expanding')
         self.graph.expand()
-        self.cooldown = 20
+        self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
+        self.fork_graph(keep_current=True)
+        self.cooldown = 50
+
+    def mov_randomize_input_adaptor(self, world):
+        key = str(world.input_index)
+        if key in self.current_node.in_node_adapters:
+            self.current_node.in_node_adapters[key].apply(self.init_weights)
+    
+    def mov_randomize_cell(self, world):
+        '''
+        Randomize the weights
+        '''
+        cell = self.current_cell
+        cell.apply(self.init_weights)
+    
+    def init_weights(self, m):
+        f = {
+            0:nn.init.kaiming_normal_,
+            1:nn.init.kaiming_uniform_,
+            2:nn.init.xavier_uniform_,
+            3:nn.init.xavier_normal_,
+        }[int(self.param_state[3])]
+        for k in ['weight', 'weights']:
+            if hasattr(m, k):
+                w = getattr(m, k)
+                if len(w.shape) > 1:
+                    f(w)
+        if hasattr(m, 'bias'):
+            nn.init.constant_(m.bias, 0.)
+        

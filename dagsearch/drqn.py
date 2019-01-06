@@ -63,7 +63,7 @@ class DRQN(nn.Module):
         return self.head(x), hidden
 
 
-BATCH_SIZE = 128
+BATCH_SIZE = 32
 GAMMA = 0.999
 EPS_START = 0.9
 EPS_END = 0.05
@@ -95,26 +95,21 @@ class Trainer(object):
         eps_threshold = EPS_END + (EPS_START - EPS_END) * \
             math.exp(-1. * self.steps_done / EPS_DECAY)
         self.steps_done += 1
-        if sample > eps_threshold:
-            with torch.no_grad():
-                y, hidden = self.policy_net(state.to(device), self._hidden_state)
+        with torch.no_grad():
+            y, hidden = self.policy_net(state.to(device), self._hidden_state)
+            if sample > eps_threshold:        
                 a = y.max(1, keepdim=True)[1]
-                self._hidden_state = hidden
                 return a, hidden
-        else:
-            self._hidden_state = (
-                torch.zeros(self.hidden_layers, 1, self.hidden_size).to(device),
-                torch.zeros(self.hidden_layers, 1, self.hidden_size).to(device)
-            )
-            return (
-                torch.tensor([[self.env.action_space.sample()]], dtype=torch.int64),
-                self._hidden_state
-            )
+            else:
+                return (
+                    torch.tensor([[self.env.action_space.sample()]], dtype=torch.int64),
+                    hidden
+                )
 
 
     def optimize_trainer_model(self):
         if len(self.memory) < BATCH_SIZE:
-            return
+            return -1.
         self.optimizer.zero_grad()
         transitions = self.memory.sample(BATCH_SIZE)
         # Transpose the batch (see http://stackoverflow.com/a/19343/3343043 for
@@ -149,13 +144,15 @@ class Trainer(object):
         # Compute Huber loss
         #print(state_action_values.shape, expected_state_action_values.shape)
         loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
-
+        _loss = float(loss.item())
+        assert _loss != float('nan') and _loss > 0., str(expected_state_action_values)
+        
         # Optimize the model
         loss.backward()
         for param in self.policy_net.parameters():
             param.grad.data.clamp_(-1, 1)
         self.optimizer.step()
-
+        return _loss
 
     def train(self, iterations=1000):
         self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -178,11 +175,11 @@ class Trainer(object):
             state = next_state
 
             # Perform one step of the optimization (on the target network)
-            self.optimize_trainer_model()
+            trainer_loss = self.optimize_trainer_model()
             # Update the target network, copying all weights and biases in DQN
             if i % TARGET_UPDATE == 0:
                 self.target_net.load_state_dict(self.policy_net.state_dict())
-                print('Reward %.3f , Loss %.4f , Gas %.2f' % (reward, info['loss'], info['gas']))
+                print('Trainer Loss %.4f , Loss %.4f , Gas %.2f' % (trainer_loss, info['loss'], info['gas']))
             if episode_over:
                 self.score_model()
                 self.env.reset()

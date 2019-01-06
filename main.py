@@ -15,7 +15,7 @@ cell_types = list(CELL_TYPES.keys())
 
 in_dim = (1, 28, 28)
 out_dim = (10,)
-batch_size = 128
+batch_size = 32
 final_image_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (1.0,))

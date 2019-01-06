@@ -12,8 +12,6 @@ class DagSearchEnv(Env):
         self.world = world
         self.action_space = spaces.Discrete(len(world.actions()))
         self.observation_space = spaces.Discrete(world.observe().shape[0])
-        self._last_loss = None
-        self._lowest_loss = None
 
     def step(self, action):
         """
@@ -52,8 +50,6 @@ class DagSearchEnv(Env):
 
     def reset(self):
         self.world.rebuild()
-        self._last_loss = None
-        self._lowest_loss = None
         return self.observe()
 
     def observe(self):
@@ -71,27 +67,6 @@ class DagSearchEnv(Env):
 
     def _reward(self, action):
         r = self.world.perform_action(action) or 0.
-        graph_loss, forked_loss = self.world.train()
-        if self._lowest_loss is None:
-            self._lowest_loss = graph_loss
-        elif self._lowest_loss > graph_loss:
-            l_delta = self._lowest_loss - graph_loss
-            self._lowest_loss = graph_loss
-            self.world.gas += l_delta * self.world.initial_gas * 2
-        delta_loss = 0.
-        if self._last_loss is not None:
-            delta_loss = self._last_loss - graph_loss * 0.999999
-        self._last_loss = graph_loss
-        reward = r + delta_loss
-        if reward > 0:
-            reward *= (forked_loss / graph_loss)
-        if self.world.gas < 0:
-            #add final score
-            reward -= graph_loss
-        reward = np.tanh(reward)
-        info = {
-            'delta_loss': delta_loss,
-            'loss': graph_loss,
-            'gas': self.world.gas,
-        }
+        info = self.world.train()
+        reward = info.pop('reward')
         return reward, info

@@ -10,6 +10,7 @@ import copy
 flatten = lambda x: x.view(x.shape[0], -1)
 
 def init_weights(m):
+    return
     if type(m) == nn.Linear:
         nn.init.xavier_uniform_(m.weight)
     if type(m) == nn.Conv2d:
@@ -49,7 +50,6 @@ class Connector(nn.Module):
         self.out_volume = np.prod(self.out_dim)
         self.model = self.make_model()
         self.add_module('model', self.model)
-        self.apply(init_weights)
 
     def make_model(self):
         if self.out_dim == self.in_dim:
@@ -178,13 +178,9 @@ class Node(nn.Module):
             self.muted_cells[cell_index] = -1
 
     def toggle_input(self, world):
-        key = world.input_index
-        if key < 0:
-            return
-        key = str(key)
+        key = str(world.input_index)
         if key in self.muted_inputs:
             self.muted_inputs[key] *= 1
-
 
 class Graph(nn.Module):
     '''
@@ -287,7 +283,7 @@ class StackedGraph(Graph):
         Only connects new nodes in a linear fashion!
         '''
         def make_layer(self):
-            if len(self.nodes):
+            if len(self.stack):
                 priors = list(self.nodes.items())[-len(sizes):]
             else:
                 priors = None
