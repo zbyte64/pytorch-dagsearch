@@ -307,3 +307,50 @@ class StackedGraph(Graph):
         new_nodes = self.make_layer(self)
         self.stack.append(new_nodes)
 
+
+class EnsembledGraph(Graph):
+    def __init__(self, make_layer, cell_types, in_dim, out_dim, channel_dim=1):
+        super(EnsembledGraph, self).__init__(cell_types, in_dim, channel_dim)
+        self.out_dim = out_dim
+        self.make_layer = make_layer
+        self.stack = list()
+        self.output_node = Node(in_dim=out_dim, out_dim=out_dim, channel_dim=self.channel_dim, cell_types=self.cell_types)
+        self.expand()
+
+    @classmethod
+    def from_sizes(cls, sizes, cell_types, in_dim, channel_dim=1):
+        '''
+        Creates layers specified by sizes and adds as a stack
+        each new layer is set to train
+        Only connects new nodes in a linear fashion!
+        '''
+        def make_layer(self):
+            if len(self.stack):
+                priors = list(self.nodes.items())[-len(sizes):]
+            else:
+                priors = None
+            keys = map(str, range(len(self.nodes), len(self.nodes)+len(sizes)))
+            #reflow links
+            nodes = OrderedDict()
+            in_dim = self.in_dim
+            for key, size in zip(keys, sizes):
+                t_node = Node(in_dim=in_dim, out_dim=size, channel_dim=self.channel_dim, cell_types=self.cell_types)
+                if priors:
+                    p_key, p_node = priors.pop(0)
+                    p_node.eval()
+                    t_node.register_input(p_key, p_node, muteable=False)
+                if len(nodes):
+                    t_node.register_input_nodes(nodes)
+                else:
+                    t_node.register_input('input', in_dim, muteable=False)
+                self.register_node(key, t_node)
+                nodes[key] = t_node
+                in_dim = t_node.out_dim
+            return nodes
+        return cls(make_layer, cell_types, in_dim, channel_dim)
+    
+    def expand(self):
+        new_nodes = self.make_layer(self)
+        last_key, last_node = list(new_nodes.items())[-1]
+        self.output_node.register_input(last_key, last_node, muteable=False)
+        self.stack.append(new_nodes)

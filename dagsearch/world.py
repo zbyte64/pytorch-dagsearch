@@ -24,6 +24,13 @@ def inf_data(dataloader):
             i = None
 
 
+def one_hot(num_classes):
+    y = torch.eye(num_classes)
+    def f(labels):
+        return y[torch.tensor(labels, dtype=torch.int64)]
+    return f
+
+
 class World(object):
     def __init__(self, graph, test_dataloader, valid_dataloader, loss_fn, initial_gas=600):
         super(World, self).__init__()
@@ -35,6 +42,8 @@ class World(object):
         self.summary = SummaryWriter()
         self.rebuild()
         self.summary.add_graph(self.graph, next(self.test_data)[0])
+        self.one_hot_node = one_hot(20)
+        self.one_hot_param = one_hot(10)
 
     def rebuild(self):
         self.graph = copy.deepcopy(self.initial_graph)
@@ -97,7 +106,7 @@ class World(object):
 
     def get_param_state(self):
         return torch.cat((self.param_state, self.current_cell.param_state))
-
+    
     def observe(self):
         graph_state = self.graph.observe()
         #reports visible node size
@@ -116,23 +125,30 @@ class World(object):
             self.param_index = 0
         _, p_min, p_max = self.get_param_options()[self.param_index]
         #TODO convey overall network shape
+        _c = lambda x: torch.sigmoid(torch.tensor(x, dtype=torch.float32))
         nav_state = torch.tensor([
             (param_state[self.param_index] - p_min) / p_max,
             cell_muted,
             input_muted,
-            self.current_loss,
-            self.ticks,
+            _c(self.current_loss),
+            _c(self.lowest_loss),
+            _c(self._graph_loss),
+            _c(self._forked_graph_loss),
+            _c(self.ticks),
             self.gas / self.initial_gas,
             self.cooldown / 100,
-            len(self.graph.nodes) / 10,
-            self.node_index / len(self.active_nodes),
-            self.cell_index / len(self.current_node.cells),
-            self.param_index / param_state.shape[0],
-            self.input_index / len(self.input_nodes),
-            len(self.graph.nodes),
-            len(self.graph.in_dim),
+            _c(len(self.graph.nodes)),
+            _c(len(self.graph.in_dim)),
         ], dtype=torch.float32)
-        return torch.cat([nav_state, graph_state, node_state, cell_state]).detach()
+        return torch.cat([
+            nav_state, 
+            self.one_hot_node(self.node_index),
+            self.one_hot_param(self.param_index),
+            self.one_hot_param(param_state[self.param_index] - p_min),
+            self.one_hot_node(self.input_index),
+            torch.sigmoid(graph_state), torch.sigmoid(node_state), 
+            cell_state
+        ]).detach()
 
     def perform_action(self, action_idx):
         '''

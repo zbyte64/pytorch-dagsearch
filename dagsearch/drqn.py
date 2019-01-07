@@ -63,7 +63,7 @@ class DRQN(nn.Module):
         return self.head(x), hidden
 
 
-BATCH_SIZE = 32
+BATCH_SIZE = 128
 GAMMA = 0.999
 EPS_START = 0.9
 EPS_END = 0.05
@@ -82,12 +82,14 @@ class Trainer(object):
         self.target_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
         self.memory = ReplayMemory(10000)
         self.optimizer = optim.RMSprop(self.policy_net.parameters())
-        self.optimizer.zero_grad()
         self.steps_done = 0
         self.score_board = []
-        self._hidden_state = (
-            torch.zeros(self.hidden_layers, 1, self.hidden_size).to(device),
-            torch.zeros(self.hidden_layers, 1, self.hidden_size).to(device)
+        self._hidden_state = self._make_hidden_state()
+    
+    def _make_hidden_state(self, bs=1):
+        return (
+            torch.zeros(self.hidden_layers, bs, self.hidden_size).to(device),
+            torch.zeros(self.hidden_layers, bs, self.hidden_size).to(device)
         )
 
     def select_action(self, state):
@@ -96,15 +98,22 @@ class Trainer(object):
             math.exp(-1. * self.steps_done / EPS_DECAY)
         self.steps_done += 1
         with torch.no_grad():
-            y, hidden = self.policy_net(state.to(device), self._hidden_state)
-            if sample > eps_threshold:        
+            _hs_has_nan = torch.sum(torch.stack((torch.isnan(self._hidden_state[0]), torch.isnan(self._hidden_state[1])))).item()
+            assert not _hs_has_nan, str(self._hidden_state)
+            if sample > eps_threshold:   
+                y, hidden = self.policy_net(state.to(device), self._hidden_state)
                 a = y.max(1, keepdim=True)[1]
-                return a, hidden
+                hidden[0][torch.isnan(hidden[0])] = 0.
+                hidden[1][torch.isnan(hidden[1])] = 0.
             else:
-                return (
+                a, hidden = (
                     torch.tensor([[self.env.action_space.sample()]], dtype=torch.int64),
-                    hidden
+                    self._make_hidden_state()
                 )
+            self._hidden_state = hidden
+            _hs_has_nan = torch.sum(torch.stack((torch.isnan(self._hidden_state[0]), torch.isnan(self._hidden_state[1])))).item()
+            assert not _hs_has_nan, str(self._hidden_state)
+            return a, self._hidden_state
 
 
     def optimize_trainer_model(self):
@@ -130,22 +139,32 @@ class Trainer(object):
             torch.cat([b[0] for b in batch.hidden_state], dim=1).to(device),
             torch.cat([b[1] for b in batch.hidden_state], dim=1).to(device)
         )
+        _hs_has_nan = torch.sum(torch.stack((torch.isnan(hidden_state[0]), torch.isnan(hidden_state[1])))).item()
+        assert not _hs_has_nan, str(hidden_state)
         #this emits a state which can be fed into target net, but should we?
         state_action_values, next_hidden_state = self.policy_net(state_batch, hidden_state)
+        next_hidden_state[0][torch.isnan(next_hidden_state[0])] = 0.
+        next_hidden_state[1][torch.isnan(next_hidden_state[1])] = 0.
+        _hs_has_nan = torch.sum(torch.stack((torch.isnan(next_hidden_state[0]), torch.isnan(next_hidden_state[1])))).item()
+        assert not _hs_has_nan, str(next_hidden_state)
         state_action_values = state_action_values.gather(1, action_batch)
 
         next_state_values = torch.zeros(BATCH_SIZE).to(device)
         #next_hidden_state = torch.cat([h for s, h in zip(batch.next_state, batch.hidden_state)
         #                                            if s is not None])
+        #next_hidden_state[0][torch.isnan(next_hidden_state[0])] = 0.
+        #next_hidden_state[1][torch.isnan(next_hidden_state[1])] = 0.
         next_state_values[non_final_mask] = self.target_net(non_final_next_states, next_hidden_state)[0].max(1)[0].detach()
         # Compute the expected Q values
         expected_state_action_values = (next_state_values * GAMMA) + reward_batch
+        expected_state_action_values[torch.isnan(expected_state_action_values)] = self.env.action_space.sample()
+        state_action_values[torch.isnan(state_action_values)] = self.env.action_space.sample()
 
         # Compute Huber loss
         #print(state_action_values.shape, expected_state_action_values.shape)
         loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
         _loss = float(loss.item())
-        assert _loss > 0., '%s' % (expected_state_action_values, reward_batch, next_state_values)
+        assert _loss >= 0., str((expected_state_action_values, state_action_values, loss))
         
         # Optimize the model
         loss.backward()
@@ -163,11 +182,12 @@ class Trainer(object):
         for i in range(iterations):
             # Select and perform an action
             prior_hidden_state = self._hidden_state
-            action, self._hidden_state = self.select_action(state)
+            action, next_hidden_state = self.select_action(state)
             assert action.dtype == torch.int64, str(action.dtype)
             ob, reward, episode_over, info = self.env.step(int(action.item()))
             if episode_over:
                 print('episode over')
+                self._hidden_state = self._make_hidden_state()
             #print(action.item(), reward, episode_over, info)
             next_state = ob
             # Store the transition in memory
