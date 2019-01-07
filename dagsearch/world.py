@@ -10,7 +10,6 @@ from functools import lru_cache, partial
 import time
 from tensorboardX import SummaryWriter
 
-from .dag import StackedGraph
 from .env import *
 
 def inf_data(dataloader):
@@ -41,7 +40,7 @@ class World(object):
         self.valid_data = inf_data(valid_dataloader)
         self.summary = SummaryWriter()
         self.rebuild()
-        self.summary.add_graph(self.graph, next(self.test_data)[0])
+        #self.summary.add_graph(self.graph, next(self.test_data)[0])
         self.one_hot_node = one_hot(20)
         self.one_hot_param = one_hot(10)
 
@@ -65,23 +64,15 @@ class World(object):
 
     @property
     def active_nodes(self):
-        if not hasattr(self.graph, 'stack'):
-            return list(self.graph.nodes.values())
-        return self.graph.stack[-1]
-
-    @property
-    def input_nodes(self):
         return self.graph.nodes
 
     @property
-    def current_node(self):
-        return self.active_nodes[self.node_index]
+    def input_nodes(self):
+        return list(self.graph.nodes.values())[-self.node_index:]
 
     @property
-    def node_key(self):
-        if not hasattr(self.graph, 'stack'):
-            return str(self.node_index)
-        return str((len(self.graph.stack) - 1) * len(self.initial_graph.nodes) + self.node_index)
+    def current_node(self):
+        return self.active_nodes[str(self.node_index)]
 
     @property
     def current_cell(self):
@@ -92,7 +83,7 @@ class World(object):
 
     @property
     def current_input(self):
-        return self.input_nodes[str(self.input_index)]
+        return self.input_nodes[self.input_index]
 
     def get_param_options(self):
         options = [
@@ -167,7 +158,7 @@ class World(object):
 
     @lru_cache()
     def _actions(self):
-        a = [self.mov_param_up, self.mov_param_down, self.mov_add_stack, self.mov_fork, self.mov_randomize_input_adaptor, self.mov_randomize_cell]
+        a = [self.mov_param_up, self.mov_param_down, self.mov_add_node, self.mov_fork, self.mov_randomize_input_adaptor, self.mov_randomize_cell]
         for f in [self.page_node, self.page_cell, self.page_param, self.page_input]:
             a.append(partial(f, direction=-1))
             a.append(partial(f, direction=1))
@@ -201,7 +192,7 @@ class World(object):
         self.param_index = self._move(self.param_index, direction, 0, len(o)-1)
 
     def page_input(self, world, direction):
-        m = len(self.input_nodes) - len(self.active_nodes) + self.node_index - 1
+        m = len(self.input_nodes) - 1
         if m < 0:
             self.input_index = -1
         else:
@@ -332,11 +323,14 @@ class World(object):
         reward = 0.
         if self.lowest_loss is None:
             self.lowest_loss = g_loss
-        elif self.lowest_loss > g_loss:
+        else:
             l_delta = self.lowest_loss - g_loss
-            reward = 1. + l_delta
-            self.lowest_loss = g_loss
-            self.gas += l_delta * self.initial_gas
+            if l_delta > 0:
+                reward = 1. + l_delta
+                self.lowest_loss = g_loss
+                self.gas += l_delta * self.initial_gas
+            else:
+                reward = l_delta
         if self.gas < 0:
             #add final score
             reward -= g_loss
@@ -352,7 +346,7 @@ class World(object):
 
     def draw(self):
         G = nx.OrderedDiGraph()
-        for ni, node in self.graph.nodes.items():
+        for ni, node in reversed(self.graph.nodes.items()):
             in_node_n = 'node_%s_input' % ni
             out_node_n = 'node_%s_output' % ni
             G.add_node(in_node_n, in_dim=node.in_dim)
@@ -368,18 +362,41 @@ class World(object):
                     G.add_edge(c_n, out_node_n)
         return G
 
-    def mov_add_stack(self, world):
+    def mov_add_node(self, world):
         if self.cooldown:
             return
         if not self.current_loss or self.current_loss > 1.0:
             return
+        input_node = self.current_input
+        size1, size2 = self.param_state[0:2]
+        link_to = self.current_node
         print('#'*20)
-        print('expanding')
-        self.graph.expand()
+        print('add_node', size1, size2)
+        if len(link_to.in_dim) == 1: 
+            #1D
+            if size1 > 0: 
+                # upscale
+                in_dim = (int(link_to.in_volume * (size1 ** .5)), )
+            else:
+                #downscale
+                in_dim = (int(max(link_to.in_volume * (2 ** size1), 1)), )
+        else: #2D
+            if size1 > 0: 
+                # upscale
+                c = int(link_to.in_dim[0] * (size1 ** .5))
+            else:
+                c = int(max(link_to.in_dim[0] * (2 ** size1), 1))
+                #downscale
+            wh = int(max(link_to.in_dim[1] * (2 ** size2), 1))
+            in_dim = (c, wh, wh)
+        new_node = self.graph.create_node(in_dim)
+        new_node.apply(self.init_weights)
+        k = len(self.graph.nodes) - 1
+        link_to.muted_inputs[str(k)] = -1.
+        self.node_index = k
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
-        self.fork_graph(keep_current=True)
-        self.cooldown = 50
-
+        self.cooldown = 100
+        
     def mov_randomize_input_adaptor(self, world):
         key = str(world.input_index)
         if key in self.current_node.in_node_adapters:

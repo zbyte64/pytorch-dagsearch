@@ -80,6 +80,11 @@ class Connector(nn.Module):
                         View(new_volume),
                         nn.Linear(new_volume, self.out_volume),
                     ])
+                elif self.in_volume != self.out_volume:
+                    transforms.extend([
+                        View(self.in_volume),
+                        nn.Linear(self.in_volume, self.out_volume),
+                    ])
         else:
             transforms.extend([
                 View(self.in_volume),
@@ -177,7 +182,7 @@ class Node(nn.Module):
             self.muted_cells[cell_index] = -1
 
     def toggle_input(self, world):
-        key = str(world.input_index)
+        key = str(world.input_index + world.node_index)
         if key in self.muted_inputs:
             self.muted_inputs[key] *= 1
 
@@ -185,6 +190,7 @@ class Graph(nn.Module):
     '''
     Creates a DAG computation of tunable cells that share weights
     Differs from ENAS in that preset cell types have scalable params
+    Also allows for adding nodes in reverse order 
     https://arxiv.org/pdf/1802.03268.pdf
     '''
     def __init__(self, cell_types, in_dim, channel_dim=1):
@@ -196,24 +202,30 @@ class Graph(nn.Module):
         self.nodes = nn.ModuleDict()
         self.add_module('nodes', self.nodes)
 
-    def create_node(self, out_dim, cell_types=None, key=None, link_previous=True):
+    def create_node(self, in_dim, out_dim=None, cell_types=None, key=None, link_previous=True):
         if key is None:
             key = str(len(self.nodes))
+        if out_dim is None:
+            if len(self.nodes):
+                prior_in_node = list(self.nodes.values())[-1]
+                out_dim = prior_in_node.in_dim
+            else:
+                out_dim = in_dim
         cell_types = cell_types or self.cell_types
-        in_nodes = dict(self.nodes)
-        if in_nodes:
-            in_dim = list(in_nodes.values())[-1].out_dim
-        else:
-            in_nodes = [('input', self.in_dim)]
-            in_dim = self.in_dim
+        in_nodes = [('input', self.in_dim)]
         node = Node(in_dim=in_dim, out_dim=out_dim, channel_dim=self.channel_dim, cell_types=cell_types)
+        node.register_input('input', self.in_dim, muteable=False)
         if link_previous:
-            node.register_input_nodes(in_nodes)
+            for i, n in enumerate(self.nodes.values()):
+                if i == 0:
+                    n.muted_inputs['input'] = 1
+                    n.register_input(key, node, muteable=False)
+                else:
+                    n.register_input(key, node)
         self.register_node(key, node)
         return node
 
     def register_node(self, key, node):
-        key = str(key)
         assert key not in self.nodes
         self.nodes.update({key: node})
 
@@ -227,7 +239,7 @@ class Graph(nn.Module):
         else:
             #otherwise we have been suplied input from another network
             assert 'input' in x
-        for key, node in self.nodes.items():
+        for key, node in reversed(self.nodes.items()):
             assert key not in outputs
             inputs = [a(outputs[k]) for k, a in node.in_node_adapters.items() if not node.is_input_muted(k)]
             assert len(inputs)
@@ -253,104 +265,3 @@ class Graph(nn.Module):
         Converts an existing model into a graph
         '''
         pass
-
-
-class StackedGraph(Graph):
-    '''
-    A DAG graph that can add layers,
-    freezing the previous layer and connecting the new
-
-    Unlike PNN, this can stack multiple layers
-    make_layer is a layer factory responsible for creating and connecting new nodes
-
-    https://arxiv.org/pdf/1706.03256.pdf
-    '''
-    def __init__(self, make_layer, cell_types, in_dim, channel_dim=1):
-        super(StackedGraph, self).__init__(cell_types, in_dim, channel_dim)
-        self.make_layer = make_layer
-        self.stack = list()
-        self.expand()
-
-    @classmethod
-    def from_sizes(cls, sizes, cell_types, in_dim, channel_dim=1):
-        '''
-        Creates layers specified by sizes and adds as a stack
-        each new layer is set to train
-        Only connects new nodes in a linear fashion!
-        '''
-        def make_layer(self):
-            if len(self.stack):
-                priors = list(self.nodes.items())[-len(sizes):]
-            else:
-                priors = None
-            keys = map(str, range(len(self.nodes), len(self.nodes)+len(sizes)))
-            #reflow links
-            nodes = OrderedDict()
-            in_dim = self.in_dim
-            for key, size in zip(keys, sizes):
-                t_node = Node(in_dim=in_dim, out_dim=size, channel_dim=self.channel_dim, cell_types=self.cell_types)
-                if priors:
-                    p_key, p_node = priors.pop(0)
-                    p_node.eval()
-                    t_node.register_input(p_key, p_node, muteable=False)
-                if len(nodes):
-                    t_node.register_input_nodes(nodes)
-                else:
-                    t_node.register_input('input', in_dim, muteable=False)
-                self.register_node(key, t_node)
-                nodes[key] = t_node
-                in_dim = t_node.out_dim
-            return list(nodes.values())
-        return cls(make_layer, cell_types, in_dim, channel_dim)
-    
-    def expand(self):
-        new_nodes = self.make_layer(self)
-        self.stack.append(new_nodes)
-
-
-class EnsembledGraph(Graph):
-    def __init__(self, make_layer, cell_types, in_dim, out_dim, channel_dim=1):
-        super(EnsembledGraph, self).__init__(cell_types, in_dim, channel_dim)
-        self.out_dim = out_dim
-        self.make_layer = make_layer
-        self.stack = list()
-        self.output_node = Node(in_dim=out_dim, out_dim=out_dim, channel_dim=self.channel_dim, cell_types=self.cell_types)
-        self.expand()
-
-    @classmethod
-    def from_sizes(cls, sizes, cell_types, in_dim, channel_dim=1):
-        '''
-        Creates layers specified by sizes and adds as a stack
-        each new layer is set to train
-        Only connects new nodes in a linear fashion!
-        '''
-        def make_layer(self):
-            if len(self.stack):
-                priors = list(self.nodes.items())[-len(sizes):]
-            else:
-                priors = None
-            keys = map(str, range(len(self.nodes), len(self.nodes)+len(sizes)))
-            #reflow links
-            nodes = OrderedDict()
-            in_dim = self.in_dim
-            for key, size in zip(keys, sizes):
-                t_node = Node(in_dim=in_dim, out_dim=size, channel_dim=self.channel_dim, cell_types=self.cell_types)
-                if priors:
-                    p_key, p_node = priors.pop(0)
-                    p_node.eval()
-                    t_node.register_input(p_key, p_node, muteable=False)
-                if len(nodes):
-                    t_node.register_input_nodes(nodes)
-                else:
-                    t_node.register_input('input', in_dim, muteable=False)
-                self.register_node(key, t_node)
-                nodes[key] = t_node
-                in_dim = t_node.out_dim
-            return nodes
-        return cls(make_layer, cell_types, in_dim, channel_dim)
-    
-    def expand(self):
-        new_nodes = self.make_layer(self)
-        last_key, last_node = list(new_nodes.items())[-1]
-        self.output_node.register_input(last_key, last_node, muteable=False)
-        self.stack.append(new_nodes)

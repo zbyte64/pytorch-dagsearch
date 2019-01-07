@@ -1,5 +1,5 @@
 import os
-from dagsearch.dag import Graph, StackedGraph
+from dagsearch.dag import Graph
 from dagsearch.world import World
 from dagsearch.cells import CELL_TYPES
 from dagsearch.dag_env import DagSearchEnv
@@ -29,12 +29,12 @@ validata_loader = torch.utils.data.DataLoader(validata,
                                           batch_size=batch_size,
                                           shuffle=True,)
 
-g = StackedGraph.from_sizes([
- (28*28, ),
- (500, ),
- (256, ),
- out_dim
-], cell_types, in_dim, channel_dim=1)
+g = Graph(cell_types, in_dim, channel_dim=1)
+for s in reversed([
+     (1, 5, 5),
+     out_dim
+    ]):
+    g.create_node(s)
 x, _ = next(iter(data_loader))
 
 world = World(g, data_loader, validata_loader, nn.CrossEntropyLoss(), initial_gas=60*5)

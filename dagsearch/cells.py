@@ -143,8 +143,8 @@ class Conv2dCell(BaseCell):
                 dilation -= 1
             elif padding > 0:
                 padding -= 1
-            elif kernel > 1:
-                kernel -= 1
+            elif kernel_size > 1:
+                kernel_size -= 1
             else:
                 assert False, 'Cannot fit convolution'
             h, w = self.conv_output_shape(x.shape[2:4], kernel_size, stride, padding, dilation)
