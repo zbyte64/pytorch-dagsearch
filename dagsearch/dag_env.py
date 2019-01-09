@@ -66,7 +66,4 @@ class DagSearchEnv(Env):
         return g
 
     def _reward(self, action):
-        r = self.world.perform_action(action) or 0.
-        info = self.world.train()
-        reward = info.pop('reward')
-        return reward, info
+        return self.world.perform_action(action)

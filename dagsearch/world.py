@@ -56,7 +56,7 @@ class World(object):
         self.cell_index = 0
         self.param_index = 0
         self.input_index = -1
-        self.param_state = torch.zeros(4)
+        self.param_state = torch.zeros(5)
         self.gas = self.initial_gas
         self.current_loss = 0.
         self.lowest_loss = 0.
@@ -90,7 +90,8 @@ class World(object):
             ('new_cell_scale1', -4, 4),
             ('new_cell_scale2', -4, 4),
             ('learning_rate', 0, 8),
-            ('initializer', 0, 4),
+            ('initializer', 0, 3),
+            ('training_steps', 0, 9),
         ]
         options.extend(self.current_cell.get_param_options())
         return options
@@ -146,11 +147,19 @@ class World(object):
         action_idx: [0, n_actions]
         direction: [-1, 1]
         '''
-        if self.cooldown > 0:
-            self.cooldown -= 1
+        assert self.gas > 0, 'Please reset environment'
         actions = self.actions()
         #print('Action:', actions[action_idx], direction)
-        return actions[action_idx](self)
+        self.gas -= .001
+        r = actions[action_idx](self)
+        if r is None:
+            r = self.lowest_loss - self.current_loss
+        info = {
+            'loss': self.current_loss,
+            'gas': self.gas,
+            'reward': r
+        }
+        return r, info
 
     def actions_shape(self):
         actions = self.actions()
@@ -158,7 +167,9 @@ class World(object):
 
     @lru_cache()
     def _actions(self):
-        a = [self.mov_param_up, self.mov_param_down, self.mov_add_node, self.mov_fork, self.mov_randomize_input_adaptor, self.mov_randomize_cell]
+        a = [self.mov_param_up, self.mov_param_down, self.mov_add_node, self.mov_fork, 
+            self.mov_randomize_input_adaptor, self.mov_randomize_cell,
+            self.mov_train]
         for f in [self.page_node, self.page_cell, self.page_param, self.page_input]:
             a.append(partial(f, direction=-1))
             a.append(partial(f, direction=1))
@@ -231,12 +242,13 @@ class World(object):
         if keep_current:
             reward = self._forked_graph_loss - self._graph_loss
         else:
-            reward = -self.current_loss
-        self.fork_graph(keep_current)
+            reward = -self.current_loss - 1
+        if keep_current:
+            self.fork_graph(keep_current)
         self._forked_graph_loss = 0.0
         self._graph_loss = 0.0
-        self.page_node(world, 0)
-        self.cooldown = 50
+        #self.page_node(world, 0)
+        self.cooldown = 10
         return reward
 
     def fork_graph(self, keep_current=False):
@@ -313,13 +325,7 @@ class World(object):
                     self.gas = -1.
                 else:
                     self.fork_graph()
-                return {
-                    'delta_loss': 0.,
-                    'loss': 0.,
-                    'forked_loss': 0.,
-                    'gas': self.gas,
-                    'reward': -1.
-                }
+                return -1.
         reward = 0.
         if self.lowest_loss is None:
             self.lowest_loss = g_loss
@@ -335,14 +341,8 @@ class World(object):
             #add final score
             reward -= g_loss
         reward = np.tanh(reward)
-        info = {
-            'loss': g_loss,
-            'forked_loss': f_loss,
-            'gas': self.gas,
-            'reward': reward
-        }
-        self.current_loss = g_loss
-        return info
+        self.current_loss = g_loss / iterations
+        return reward
 
     def draw(self):
         G = nx.OrderedDiGraph()
@@ -423,4 +423,10 @@ class World(object):
                     f(w)
         if hasattr(m, 'bias'):
             nn.init.constant_(m.bias, 0.)
+        
+    def mov_train(self, world):
+        iterations = int(self.param_state[4] + 1) ** 2
+        if self.cooldown > 0:
+            self.cooldown -= iterations
+        return self.train(iterations)
         
