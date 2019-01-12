@@ -49,8 +49,11 @@ if os.path.exists('./trainer.pth'):
     trainer.policy_net.load_state_dict(torch.load('./trainer.pth'))
 #trainer.train(5)
 #env.render()
+if os.path.exists('./memory.pickle'):
+    trainer.memory.load()
 while True:
-    trainer.train(1000)
+    trainer.train(10000)
     #env.render()
     print('saving...')
     torch.save(trainer.policy_net.state_dict(), './trainer.pth')
+    trainer.memory.save()

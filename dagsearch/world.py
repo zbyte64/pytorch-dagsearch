@@ -26,12 +26,14 @@ def inf_data(dataloader):
 def one_hot(num_classes):
     y = torch.eye(num_classes)
     def f(labels):
-        return y[torch.tensor(labels, dtype=torch.int64)]
+        if isinstance(labels, int):
+            return y[labels]
+        return y[labels.type(torch.int64)]
     return f
 
 
 class World(object):
-    def __init__(self, graph, test_dataloader, valid_dataloader, loss_fn, initial_gas=600):
+    def __init__(self, graph, test_dataloader, valid_dataloader, loss_fn, initial_gas=600, ratcheting=True):
         super(World, self).__init__()
         self.initial_graph = graph
         self.initial_gas = initial_gas
@@ -43,6 +45,7 @@ class World(object):
         #self.summary.add_graph(self.graph, next(self.test_data)[0])
         self.one_hot_node = one_hot(20)
         self.one_hot_param = one_hot(10)
+        self.ratcheting = ratcheting
 
     def rebuild(self):
         self.graph = copy.deepcopy(self.initial_graph)
@@ -51,15 +54,16 @@ class World(object):
         self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.0001, momentum=0.9)
         self._graph_loss = 0.0
         self._forked_graph_loss = 0.0
-        self.cooldown = 80
+        self.cooldown = 40
         self.node_index = 0
         self.cell_index = 0
         self.param_index = 0
         self.input_index = -1
         self.param_state = torch.zeros(5)
         self.gas = self.initial_gas
-        self.current_loss = 0.
-        self.lowest_loss = 0.
+        self.current_loss = None
+        self.lowest_loss = None
+        self.initial_loss = None
         self.ticks = 0
 
     @property
@@ -122,8 +126,8 @@ class World(object):
             (param_state[self.param_index] - p_min) / p_max,
             cell_muted,
             input_muted,
-            _c(self.current_loss),
-            _c(self.lowest_loss),
+            _c(self.current_loss or 0.),
+            _c(self.lowest_loss or 0.),
             _c(self._graph_loss),
             _c(self._forked_graph_loss),
             _c(self.ticks),
@@ -150,12 +154,19 @@ class World(object):
         assert self.gas > 0, 'Please reset environment'
         actions = self.actions()
         #print('Action:', actions[action_idx], direction)
-        self.gas -= .001
+        self.gas -= .015
         r = actions[action_idx](self)
         if r is None:
-            r = self.lowest_loss - self.current_loss
+            if self.current_loss is None:
+                r = 0.
+            else:
+                r = self.lowest_loss - self.current_loss
+        if self.gas <= 0:
+            #add final score
+            r += (self.initial_loss - self.current_loss) / self.initial_loss
+        r = torch.tanh(torch.tensor(r)).item()
         info = {
-            'loss': self.current_loss,
+            'loss': self.current_loss or 0.,
             'gas': self.gas,
             'reward': r
         }
@@ -243,7 +254,7 @@ class World(object):
             reward = self._forked_graph_loss - self._graph_loss
         else:
             reward = -self.current_loss - 1
-        if keep_current:
+        if self.ratcheting or keep_current:
             self.fork_graph(keep_current)
         self._forked_graph_loss = 0.0
         self._graph_loss = 0.0
@@ -268,8 +279,6 @@ class World(object):
 
     def adjust_learning_rate(self, lr):
         #lr = args.lr * (0.1 ** (epoch // 30))
-        print('#'*30)
-        print('lr', lr)
         for param_group in self.graph_optimizer.param_groups:
             param_group['lr'] = lr
 
@@ -326,22 +335,25 @@ class World(object):
                 else:
                     self.fork_graph()
                 return -1.
-        reward = 0.
+            if self.gas <= 0:
+                break
+        g_loss /= iterations
+        f_loss /= iterations
+        reward = None
         if self.lowest_loss is None:
             self.lowest_loss = g_loss
+            self.initial_loss = g_loss
         else:
-            l_delta = self.lowest_loss - g_loss
+            #scale loss relative to initial loss
+            l_delta = (self.lowest_loss - g_loss) / self.initial_loss
             if l_delta > 0:
                 reward = 1. + l_delta
                 self.lowest_loss = g_loss
+                #may earn back 100% of initial gas if loss drops 100%
                 self.gas += l_delta * self.initial_gas
             else:
-                reward = l_delta
-        if self.gas < 0:
-            #add final score
-            reward -= g_loss
-        reward = np.tanh(reward)
-        self.current_loss = g_loss / iterations
+                reward = self.lowest_loss - g_loss * 0.98
+        self.current_loss = g_loss
         return reward
 
     def draw(self):
@@ -363,15 +375,13 @@ class World(object):
         return G
 
     def mov_add_node(self, world):
-        if self.cooldown:
-            return
-        if not self.current_loss or self.current_loss > 1.0:
+        if self.current_loss is None or (self.current_loss / self.initial_loss) > .7:
             return
         input_node = self.current_input
         size1, size2 = self.param_state[0:2]
         link_to = self.current_node
         print('#'*20)
-        print('add_node', size1, size2)
+        print('add_node', size1, size2, len(link_to.in_dim))
         if len(link_to.in_dim) == 1: 
             #1D
             if size1 > 0: 
@@ -395,7 +405,7 @@ class World(object):
         link_to.muted_inputs[str(k)] = -1.
         self.node_index = k
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
-        self.cooldown = 100
+        self.cooldown = 50
         
     def mov_randomize_input_adaptor(self, world):
         key = str(world.input_index)
@@ -425,7 +435,7 @@ class World(object):
             nn.init.constant_(m.bias, 0.)
         
     def mov_train(self, world):
-        iterations = int(self.param_state[4] + 1) ** 2
+        iterations = int(self.param_state[4] + 3) ** 2
         if self.cooldown > 0:
             self.cooldown -= iterations
         return self.train(iterations)

@@ -6,6 +6,7 @@ import numpy as np
 from collections import namedtuple
 from itertools import count
 import heapq
+import pickle
 
 import torch
 import torch.nn as nn
@@ -22,20 +23,29 @@ class ReplayMemory(object):
     def __init__(self, capacity):
         self.capacity = capacity
         self.memory = []
-        self.position = 0
 
     def push(self, *args):
         """Saves a transition."""
+        t = Transition(*args)
         if len(self.memory) < self.capacity:
-            self.memory.append(None)
-        self.memory[self.position] = Transition(*args)
-        self.position = (self.position + 1) % self.capacity
+            self.memory.append(t)
+        else:
+            pos = random.randint(0, len(self)-1)
+            self.memory[pos] = t
 
     def sample(self, batch_size):
         return random.sample(self.memory, batch_size)
 
     def __len__(self):
         return len(self.memory)
+    
+    def save(self, name='memory.pickle'):
+        outs = open(name, 'wb')
+        pickle.dump(self.memory, outs)
+    
+    def load(self, name='memory.pickle'):
+        ins = open(name, 'rb')
+        self.memory = pickle.load(ins)
 
 
 class DRQN(nn.Module):
@@ -80,7 +90,7 @@ class Trainer(object):
         self.hidden_layers = 1
         self.policy_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
         self.target_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
-        self.memory = ReplayMemory(10000)
+        self.memory = ReplayMemory(100000)
         self.optimizer = optim.RMSprop(self.policy_net.parameters())
         self.steps_done = 0
         self.score_board = []
