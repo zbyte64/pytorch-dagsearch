@@ -33,7 +33,8 @@ def one_hot(num_classes):
 
 
 class World(object):
-    def __init__(self, graph, test_dataloader, valid_dataloader, loss_fn, initial_gas=600, ratcheting=True):
+    def __init__(self, graph, test_dataloader, valid_dataloader, loss_fn, 
+    initial_gas=600, ratcheting=True, add_threshold=.7):
         super(World, self).__init__()
         self.initial_graph = graph
         self.initial_gas = initial_gas
@@ -46,6 +47,7 @@ class World(object):
         self.one_hot_node = one_hot(20)
         self.one_hot_param = one_hot(10)
         self.ratcheting = ratcheting
+        self.add_threshold = add_threshold
 
     def rebuild(self):
         self.graph = copy.deepcopy(self.initial_graph)
@@ -64,6 +66,7 @@ class World(object):
         self.current_loss = None
         self.lowest_loss = None
         self.initial_loss = None
+        self.current_bench = None
         self.ticks = 0
 
     @property
@@ -88,6 +91,12 @@ class World(object):
     @property
     def current_input(self):
         return self.input_nodes[self.input_index]
+    
+    @property
+    def input_key(self):
+        if self.input_index < 0:
+            return 'input'
+        return str(self.input_index + self.node_index)
 
     def get_param_options(self):
         options = [
@@ -343,6 +352,7 @@ class World(object):
         if self.lowest_loss is None:
             self.lowest_loss = g_loss
             self.initial_loss = g_loss
+            self.current_bench = g_loss
         else:
             #scale loss relative to initial loss
             l_delta = (self.lowest_loss - g_loss) / self.initial_loss
@@ -375,8 +385,9 @@ class World(object):
         return G
 
     def mov_add_node(self, world):
-        if self.current_loss is None or (self.current_loss / self.initial_loss) > .7:
+        if self.current_bench is None or (self.current_loss / self.current_bench) > self.add_threshold:
             return
+        self.current_bench = self.current_loss
         input_node = self.current_input
         size1, size2 = self.param_state[0:2]
         link_to = self.current_node
@@ -399,13 +410,18 @@ class World(object):
                 #downscale
             wh = int(max(link_to.in_dim[1] * (2 ** size2), 1))
             in_dim = (c, wh, wh)
-        new_node = self.graph.create_node(in_dim)
+        new_index = len(self.graph.nodes)
+        new_key = str(new_index)
+        new_node = self.graph.create_node(in_dim, key=new_key)
         new_node.apply(self.init_weights)
-        k = len(self.graph.nodes) - 1
-        link_to.muted_inputs[str(k)] = -1.
-        self.node_index = k
+        assert new_key in link_to.in_node_adapters
+        if new_key in link_to.muted_inputs:
+            link_to.muted_inputs[new_key] = -1.
+        #link_to.muted_inputs.setdefault(self.input_key,  1)
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
-        self.cooldown = 50
+        self.cooldown = 20
+        self.node_index = new_index
+        self.page_node(world, 0)
         
     def mov_randomize_input_adaptor(self, world):
         key = str(world.input_index)
