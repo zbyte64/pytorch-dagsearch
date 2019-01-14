@@ -23,6 +23,7 @@ class ReplayMemory(object):
     def __init__(self, capacity):
         self.capacity = capacity
         self.memory = []
+        self.position = 0
 
     def push(self, *args):
         """Saves a transition."""
@@ -30,8 +31,8 @@ class ReplayMemory(object):
         if len(self.memory) < self.capacity:
             self.memory.append(t)
         else:
-            pos = random.randint(0, len(self)-1)
-            self.memory[pos] = t
+            self.memory[self.position] = t
+            self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
         return random.sample(self.memory, batch_size)
@@ -108,21 +109,18 @@ class Trainer(object):
             math.exp(-1. * self.steps_done / EPS_DECAY)
         self.steps_done += 1
         with torch.no_grad():
-            _hs_has_nan = torch.sum(torch.stack((torch.isnan(self._hidden_state[0]), torch.isnan(self._hidden_state[1])))).item()
-            assert not _hs_has_nan, str(self._hidden_state)
+            #_hs_has_nan = torch.sum(torch.stack((torch.isnan(self._hidden_state[0]), torch.isnan(self._hidden_state[1])))).item()
+            #assert not _hs_has_nan, str(self._hidden_state)
+            y, hidden = self.policy_net(state.to(device), self._hidden_state)
+            hidden[0][torch.isnan(hidden[0])] = 0.
+            hidden[1][torch.isnan(hidden[1])] = 0.
             if sample > eps_threshold:   
-                y, hidden = self.policy_net(state.to(device), self._hidden_state)
                 a = y.max(1, keepdim=True)[1]
-                hidden[0][torch.isnan(hidden[0])] = 0.
-                hidden[1][torch.isnan(hidden[1])] = 0.
             else:
-                a, hidden = (
-                    torch.tensor([[self.env.action_space.sample()]], dtype=torch.int64),
-                    self._make_hidden_state()
-                )
+                a = torch.tensor([[self.env.action_space.sample()]], dtype=torch.int64)
             self._hidden_state = hidden
-            _hs_has_nan = torch.sum(torch.stack((torch.isnan(self._hidden_state[0]), torch.isnan(self._hidden_state[1])))).item()
-            assert not _hs_has_nan, str(self._hidden_state)
+            #_hs_has_nan = torch.sum(torch.stack((torch.isnan(self._hidden_state[0]), torch.isnan(self._hidden_state[1])))).item()
+            #assert not _hs_has_nan, str(self._hidden_state)
             return a, self._hidden_state
 
 

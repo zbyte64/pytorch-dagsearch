@@ -169,10 +169,11 @@ class World(object):
             if self.current_loss is None:
                 r = 0.
             else:
-                r = self.lowest_loss - self.current_loss
+                r = (self.initial_loss - self.current_loss) / self.initial_loss
         if self.gas <= 0:
             #add final score
-            r += (self.initial_loss - self.current_loss) / self.initial_loss
+            if self.current_loss is not None:
+                r += (self.initial_loss - self.current_loss) / self.initial_loss
         r = torch.tanh(torch.tensor(r)).item()
         info = {
             'loss': self.current_loss or 0.,
@@ -265,9 +266,9 @@ class World(object):
             reward = -self.current_loss - 1
         if self.ratcheting or keep_current:
             self.fork_graph(keep_current)
+            self.page_node(world, 0)
         self._forked_graph_loss = 0.0
         self._graph_loss = 0.0
-        #self.page_node(world, 0)
         self.cooldown = 10
         return reward
 
@@ -356,13 +357,13 @@ class World(object):
         else:
             #scale loss relative to initial loss
             l_delta = (self.lowest_loss - g_loss) / self.initial_loss
+            reward = (self.initial_loss - self.current_loss * 0.98) / self.initial_loss
+            #special rewards for new low loss
             if l_delta > 0:
-                reward = 1. + l_delta
+                reward += l_delta
                 self.lowest_loss = g_loss
                 #may earn back 100% of initial gas if loss drops 100%
                 self.gas += l_delta * self.initial_gas
-            else:
-                reward = self.lowest_loss - g_loss * 0.98
         self.current_loss = g_loss
         return reward
 

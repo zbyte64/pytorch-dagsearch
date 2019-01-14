@@ -110,7 +110,7 @@ class Conv2dCell(BaseCell):
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
-        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] <= out_dim[0] and in_dim[1] >= out_dim[1]
+        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] <= out_dim[0]
 
     @staticmethod
     def conv_output_shape(h_w, kernel_size=1, stride=1, pad=0, dilation=1):
@@ -200,7 +200,17 @@ class DeConv2dCell(BaseCell):
 
     @staticmethod
     def valid(in_dim, out_dim, channel_dim):
-        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] > out_dim[0] and in_dim[1] <= out_dim[1]
+        return len(in_dim) == 3 and len(out_dim) == 3 and in_dim[0] > out_dim[0]
+    
+    @staticmethod
+    def deconv_output_shape(h_w, kernel_size=1, stride=1, pad=0, dilation=1):
+        from math import floor
+        assert len(h_w) == 2
+        if type(kernel_size) is not tuple:
+            kernel_size = (kernel_size, kernel_size)
+        h = floor( ((h_w[0] + (2 * pad) - ( dilation * (kernel_size[0] - 1) ) - 1 ) * stride) + 1)
+        w = floor( ((h_w[1] + (2 * pad) - ( dilation * (kernel_size[1] - 1) ) - 1 ) * stride) + 1)
+        return h, w
 
     def get_param_options(self):
         return [
@@ -215,6 +225,22 @@ class DeConv2dCell(BaseCell):
         kernel_size = int(params['kernel'])
         stride = min(int(params['stride']), kernel_size)
         dilation = int(params['dilation'])
+        '''
+        padding = 0
+        h, w = self.deconv_output_shape(x.shape[2:4], kernel_size, stride, padding, dilation)
+        while h < 1:
+            if stride > 1:
+                stride -= 1
+            elif dilation > 1:
+                dilation -= 1
+            elif padding > 0:
+                padding -= 1
+            elif kernel_size > 1:
+                kernel_size -= 1
+            else:
+                assert False, 'Cannot fit deconvolution'
+            h, w = self.deconv_output_shape(x.shape[2:4], kernel_size, stride, padding, dilation)
+        '''
         kernel = self.weights.to(device)
         if kernel_size < self.max_kernel_size:
             kernel = torch.narrow(kernel, 2, 0, kernel_size)
