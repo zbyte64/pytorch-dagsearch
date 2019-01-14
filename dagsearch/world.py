@@ -9,6 +9,7 @@ import copy
 from functools import lru_cache, partial
 import time
 from tensorboardX import SummaryWriter
+from collections import OrderedDict
 
 from .env import *
 
@@ -71,18 +72,24 @@ class World(object):
 
     @property
     def active_nodes(self):
-        return self.graph.nodes
+        return self.graph.tensor_nodes
 
     @property
     def input_nodes(self):
-        return list(self.graph.nodes.values())[-self.node_index:]
+        return list(self.graph.predecessors(self.node_key))
+
+    @property
+    def node_key(self):
+        return str(self.node_index)
 
     @property
     def current_node(self):
-        return self.active_nodes[str(self.node_index)]
+        return self.active_nodes[self.node_key]
 
     @property
     def current_cell(self):
+        if not hasattr(self.current_node, 'cells'):
+            return None
         if len(self.current_node.cells) <= self.cell_index:
             #assert False, 'All nodes should have the same number of cells'
             self.cell_index = 0
@@ -90,13 +97,11 @@ class World(object):
 
     @property
     def current_input(self):
-        return self.input_nodes[self.input_index]
+        return self.graph.nodes[self.input_key]
     
     @property
     def input_key(self):
-        if self.input_index < 0:
-            return 'input'
-        return str(self.input_index + self.node_index)
+        return self.input_nodes[self.input_index]
 
     def get_param_options(self):
         options = [
@@ -113,17 +118,21 @@ class World(object):
         return torch.cat((self.param_state, self.current_cell.param_state))
     
     def observe(self):
-        graph_state = self.graph.observe()
         #reports visible node size
+        current_node = self.graph.nodes[self.node_key]
+        current_input = self.graph.nodes[self.input_key]
+        current_adaptor = self.graph.tensor_adaptors['%s->%s' % (self.input_key, self.node_key)]
+        node_stats = lambda n: torch.stack([
+            _c(len(n['in_dim'])),
+            _c(np.prod(n['in_dim'])),
+            _c(len(n['out_dim'])),
+            _c(np.prod(n['out_dim'])),
+        ])
         max_volume = self.graph.in_volume
-        node_state = self.current_node.observe() / max_volume
         #reports the type of cell (one hot)
         cell_state = self.current_cell.observe()
         cell_muted = self.current_node.muted_cells[self.cell_index]
-        if self.input_index < len(self.current_node.muted_inputs):
-            input_muted = self.current_node.is_input_muted(str(self.input_index))
-        else:
-            input_muted = 0.
+        input_muted = 1. if self.graph.is_input_muted(self.input_key, self.node_key) else 0.
         param_state = self.get_param_state()
         if self.param_index >= param_state.shape[0]:
             assert False, 'This should happen when paging cells'
@@ -142,8 +151,12 @@ class World(object):
             _c(self.ticks),
             self.gas / self.initial_gas,
             self.cooldown / 100,
-            _c(len(self.graph.nodes)),
+            _c(len(self.graph.tensor_nodes)),
             _c(len(self.graph.in_dim)),
+            _c(self.graph.in_volume),
+            _c(current_adaptor._std_dev),
+            _c(current_adaptor._mean),
+            
         ], dtype=torch.float32)
         return torch.cat([
             nav_state, 
@@ -151,7 +164,8 @@ class World(object):
             self.one_hot_param(self.param_index),
             self.one_hot_param(param_state[self.param_index] - p_min),
             self.one_hot_node(self.input_index),
-            torch.sigmoid(graph_state), torch.sigmoid(node_state), 
+            node_stats(current_node),
+            node_stats(current_input),
             cell_state
         ]).detach()
 
@@ -187,18 +201,20 @@ class World(object):
         return (len(actions), )
 
     @lru_cache()
-    def _actions(self):
+    def actions(self):
         a = [self.mov_param_up, self.mov_param_down, self.mov_add_node, self.mov_fork, 
-            self.mov_randomize_input_adaptor, self.mov_randomize_cell,
-            self.mov_train]
+            self.mov_randomize_input_adaptor, self.mov_randomize_cell, self.mov_toggle_input,
+            self.mov_train, self.mov_toggle_cell]
         for f in [self.page_node, self.page_cell, self.page_param, self.page_input]:
             a.append(partial(f, direction=-1))
             a.append(partial(f, direction=1))
         return a
-
-    def actions(self):
-        actions = self._actions() + self.current_node.actions()
-        return actions
+    
+    def mov_toggle_input(self, world):
+        src = self.input_key
+        to = self.node_key
+        if self.graph.has_edge(src, to) and self.graph[src][to]['muteable']:
+            self.graph[src][to]['muted'] = not self.graph[src][to]['muted']
 
     def _move(self, v, direction, _min, _max):
         v += int(direction * 2)
@@ -225,10 +241,7 @@ class World(object):
 
     def page_input(self, world, direction):
         m = len(self.input_nodes) - 1
-        if m < 0:
-            self.input_index = -1
-        else:
-            self.input_index = self._move(self.input_index, direction, 0, m)
+        self.input_index = self._move(self.input_index, direction, 0, m)
 
     def toggle_param(self, world, direction):
         param_index = world.param_index
@@ -368,6 +381,7 @@ class World(object):
         return reward
 
     def draw(self):
+        return self.graph
         G = nx.OrderedDiGraph()
         for ni, node in reversed(self.graph.nodes.items()):
             in_node_n = 'node_%s_input' % ni
@@ -389,52 +403,52 @@ class World(object):
         if self.current_bench is None or (self.current_loss / self.current_bench) > self.add_threshold:
             return
         self.current_bench = self.current_loss
-        input_node = self.current_input
         size1, size2 = self.param_state[0:2]
-        link_to = self.current_node
+        link_to = self.graph.nodes[self.node_key]
         print('#'*20)
-        print('add_node', size1, size2, len(link_to.in_dim))
-        if len(link_to.in_dim) == 1: 
+        print('add_node', size1, size2, len(link_to['in_dim']))
+        in_dim = link_to['in_dim']
+        in_volume = np.prod(in_dim)
+        if len(in_dim) == 1: 
             #1D
             if size1 > 0: 
                 # upscale
-                in_dim = (int(link_to.in_volume * (size1 ** .5)), )
+                in_dim = (int(in_volume * (size1 ** .5)), )
             else:
                 #downscale
-                in_dim = (int(max(link_to.in_volume * (2 ** size1), 1)), )
+                in_dim = (int(max(in_volume * (2 ** size1), 1)), )
         else: #2D
             if size1 > 0: 
                 # upscale
-                c = int(link_to.in_dim[0] * (size1 ** .5))
+                c = int(in_dim[0] * (size1 ** .5))
             else:
-                c = int(max(link_to.in_dim[0] * (2 ** size1), 1))
+                c = int(max(in_dim[0] * (2 ** size1), 1))
                 #downscale
-            wh = int(max(link_to.in_dim[1] * (2 ** size2), 1))
+            wh = int(max(in_dim[1] * (2 ** size2), 1))
             in_dim = (c, wh, wh)
-        new_index = len(self.graph.nodes)
+        new_index = len(self.graph.tensor_nodes)
         new_key = str(new_index)
-        new_node = self.graph.create_node(in_dim, key=new_key)
+        new_node = self.graph.create_hypercell(in_dim, key=new_key)
         new_node.apply(self.init_weights)
-        assert new_key in link_to.in_node_adapters
-        if new_key in link_to.muted_inputs:
-            link_to.muted_inputs[new_key] = -1.
-        #link_to.muted_inputs.setdefault(self.input_key,  1)
+        self.graph[new_key][self.node_key]['muted'] = False
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
         self.cooldown = 20
         self.node_index = new_index
         self.page_node(world, 0)
         
     def mov_randomize_input_adaptor(self, world):
-        key = str(world.input_index)
-        if key in self.current_node.in_node_adapters:
-            self.current_node.in_node_adapters[key].apply(self.init_weights)
+        key = '%s->%s' % (self.input_key, self.node_key)
+        if key in world.graph.tensor_adaptors:
+            a = world.graph.tensor_adaptors[key]
+            a.apply(self.init_weights)
     
     def mov_randomize_cell(self, world):
         '''
         Randomize the weights
         '''
         cell = self.current_cell
-        cell.apply(self.init_weights)
+        if cell is not None:
+            cell.apply(self.init_weights)
     
     def init_weights(self, m):
         f = {
@@ -456,4 +470,13 @@ class World(object):
         if self.cooldown > 0:
             self.cooldown -= iterations
         return self.train(iterations)
+    
+    def mov_toggle_cell(self, world):
+        node = self.current_node
+        if not hasattr(node, 'cells'):
+            return
+        cell_index = world.cell_index
+        if cell_index < len(node.muted_cells):
+            node.muted_cells = torch.ones_like(node.muted_cells)
+            node.muted_cells[cell_index] = -1
         

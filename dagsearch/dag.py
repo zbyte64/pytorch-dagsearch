@@ -6,23 +6,13 @@ import numpy as np
 import random
 import copy
 from collections import OrderedDict
-
-
-flatten = lambda x: x.view(x.shape[0], -1)
-
-def init_weights(m):
-    return
-    if type(m) == nn.Linear:
-        nn.init.xavier_uniform_(m.weight)
-    if type(m) == nn.Conv2d:
-        nn.init.xavier_uniform_(m.weight)
+import networkx
 
 
 class Identity(nn.Module):
     def forward(self, x):
         return x
 
-identity = Identity()
 
 class View(nn.Module):
     def __init__(self, *shape):
@@ -43,6 +33,10 @@ class Interpolate(nn.Module):
 
 
 class Connector(nn.Module):
+    '''
+    Allows for (residual) connecting of layers with different sizes
+    Transformation results should be additive
+    '''
     def __init__(self, in_dim, out_dim):
         super(Connector, self).__init__()
         self.in_dim = in_dim
@@ -51,6 +45,7 @@ class Connector(nn.Module):
         self.out_volume = np.prod(self.out_dim)
         self.model = self.make_model()
         self.add_module('model', self.model)
+        self._mean, self._std_dev = 0.0, 0.0
 
     def make_model(self):
         if self.out_dim == self.in_dim:
@@ -101,48 +96,29 @@ class Connector(nn.Module):
         return torch.nn.Sequential(*transforms)
 
     def forward(self, x):
-        return self.model(x)
+        out = self.model(x)
+        self._mean = torch.mean(out).item()
+        self._std_dev = torch.std(out).item()
+        return out
 
 
-class Node(nn.Module):
+class HyperCell(nn.Module):
+    '''
+    Special type of node that enables Efficient Network Architecture Search
+    '''
     def __init__(self, cell_types, in_dim, out_dim, channel_dim=1):
-        super(Node, self).__init__()
+        super(HyperCell, self).__init__()
         _a = (in_dim, out_dim, channel_dim)
         self.cells = nn.ModuleList([s(*_a) for s in filter(lambda s: s.valid(*_a), cell_types)])
         assert self.cells, str(_a)
         self.muted_cells = torch.ones(len(self.cells))
         self.muted_cells[random.randint(0, len(self.cells)-1)] = -1
-        self.muted_inputs = dict()#nn.ModuleDict()
         self.in_dim = in_dim
         self.in_volume = np.prod(in_dim)
         self.out_dim = out_dim
         self.out_volume = np.prod(out_dim)
         self.channel_dim = channel_dim
-        self.in_node_adapters = nn.ModuleDict()
         self.add_module('cells', self.cells)
-        self.add_module('in_node_adapters', self.in_node_adapters)
-        self._mean, self._std_dev = 0.0, 0.0
-    
-    def register_input_nodes(self, in_nodes):
-        for key, in_node in in_nodes.items():
-            self.register_input(key, in_node)
-        if in_nodes:
-            self.muted_inputs.pop(key)
-
-    def register_input(self, key, in_node_or_dim, drop_out=None, muteable=True):
-        if isinstance(in_node_or_dim, Node):
-            adaptor = Connector(in_node_or_dim.out_dim, self.in_dim)
-        else:
-            assert isinstance(in_node_or_dim, (tuple, list))
-            adaptor = Connector(in_node_or_dim, self.in_dim)
-        if drop_out is not None:
-            adaptor = nn.Sequential(adaptor, nn.Dropout(drop_out))
-        self.in_node_adapters.update({key: adaptor})
-        if muteable:
-            self.muted_inputs[key] = torch.tensor(1)
-
-    def is_input_muted(self, node_id):
-        return node_id not in self.in_node_adapters or self.muted_inputs.get(node_id, -1) > 0
 
     def forward(self, x):
         #print('Node connect:', x.shape, self.in_dim, self.out_dim)
@@ -165,28 +141,10 @@ class Node(nn.Module):
             out = matched_outputs[0]
         assert out.shape[0] == x.shape[0], str(out.shape)
         assert out.shape[1:] == self.out_dim, '%s != %s' % (out.shape, self.out_dim)
-        self._mean = torch.mean(out).item()
-        self._std_dev = torch.std(out).item()
         return out
 
-    def observe(self):
-        return torch.tensor([self.in_volume, self.out_volume, self._mean, self._std_dev, len(self.in_dim), len(self.out_dim)], dtype=torch.float32)
 
-    def actions(self):
-        return [self.toggle_cell, self.toggle_input]
-
-    def toggle_cell(self, world):
-        cell_index = world.cell_index
-        if cell_index < len(self.muted_cells):
-            self.muted_cells = torch.ones_like(self.muted_cells)
-            self.muted_cells[cell_index] = -1
-
-    def toggle_input(self, world):
-        key = str(world.input_index + world.node_index)
-        if key in self.muted_inputs:
-            self.muted_inputs[key] *= 1
-
-class Graph(nn.Module):
+class Graph(nn.Module, networkx.DiGraph): #TensorGraph? TorchGraph?
     '''
     Creates a DAG computation of tunable cells that share weights
     Differs from ENAS in that preset cell types have scalable params
@@ -194,67 +152,80 @@ class Graph(nn.Module):
     https://arxiv.org/pdf/1802.03268.pdf
     '''
     def __init__(self, cell_types, in_dim, channel_dim=1):
-        super(Graph, self).__init__()
+        nn.Module.__init__(self)
+        networkx.DiGraph.__init__(self)
         self.cell_types = cell_types
         self.in_dim = in_dim
         self.in_volume = np.prod(in_dim)
         self.channel_dim = channel_dim
-        self.nodes = nn.ModuleDict()
-        self.add_module('nodes', self.nodes)
+        self.tensor_nodes = nn.ModuleDict()
+        self.tensor_adaptors = nn.ModuleDict()
+        self.add_module('tensor_nodes', self.tensor_nodes)
+        self.add_module('tensor_adaptors', self.tensor_adaptors)
+        self.add_node('input', out_dim=in_dim, in_dim=(0,))
+    
+    def named_children(self):
+        from itertools import chain
+        return chain(self.tensor_nodes.named_children(), self.tensor_adaptors.named_children())
 
-    def create_node(self, in_dim, out_dim=None, cell_types=None, key=None, link_previous=True):
+    def create_hypercell(self, in_dim, out_dim=None, cell_types=None, key=None, link_previous=True):
         if key is None:
-            key = str(len(self.nodes))
+            key = str(len(self.tensor_nodes))
         if out_dim is None:
-            if len(self.nodes):
-                prior_in_node = list(self.nodes.values())[-1]
+            if len(self.tensor_nodes):
+                prior_in_node = list(self.tensor_nodes.values())[-1]
                 out_dim = prior_in_node.in_dim
             else:
                 out_dim = in_dim
         cell_types = cell_types or self.cell_types
-        in_nodes = [('input', self.in_dim)]
-        node = Node(in_dim=in_dim, out_dim=out_dim, channel_dim=self.channel_dim, cell_types=cell_types)
-        node.register_input('input', self.in_dim, muteable=False)
+        prior_nodes = list(self.tensor_nodes.items())
+        node = HyperCell(in_dim=in_dim, out_dim=out_dim, channel_dim=self.channel_dim, cell_types=cell_types)
+        self.register_node(key, node, in_dim, out_dim)
+        self.register_adaptor('input', key, muteable=False, muted=False)
         if link_previous:
-            for i, n in enumerate(self.nodes.values()):
+            for i, (k, n) in enumerate(prior_nodes):
                 if i == 0:
-                    n.muted_inputs['input'] = 1
-                    n.register_input(key, node, muteable=False)
+                    self['input'][k]['muteable'] = True
+                    self['input'][k]['muted'] = True
+                    self.register_adaptor(key, k, muteable=False, muted=False)
                 else:
-                    n.register_input(key, node)
-        self.register_node(key, node)
+                    self.register_adaptor(key, k)
         return node
 
-    def register_node(self, key, node):
+    def register_node(self, key, node, in_dim, out_dim):
         assert key not in self.nodes
-        self.nodes.update({key: node})
+        self.add_node(key, in_dim=in_dim, out_dim=out_dim)
+        self.tensor_nodes.update({key: node})
+    
+    def register_adaptor(self, src, to, muteable=True, muted=True):
+        key = '%s->%s' % (src, to)
+        in_dim = self.nodes[src]['out_dim']
+        out_dim = self.nodes[to]['in_dim']
+        adaptor = Connector(in_dim, out_dim)
+        self.add_edge(src, to, muteable=muteable, muted=muted)
+        self.tensor_adaptors.update({key: adaptor})
+    
+    def is_input_muted(self, src, to):
+        return not self.has_edge(src, to) or self[src][to]['muted']
 
-    def observe(self):
-        return torch.FloatTensor([self.in_volume, len(self.nodes)])
-
-    def forward(self, x, outputs=None):
+    def forward(self, x):
         assert x is not None
-        if outputs is None:
-            outputs = {'input': x}
-        else:
-            #otherwise we have been suplied input from another network
-            assert 'input' in x
-        for key, node in reversed(self.nodes.items()):
+        outputs = {'input': x}
+        for key, node in reversed(self.tensor_nodes.items()):
+            #print(key, list(self.predecessors(key)))
             assert key not in outputs
-            inputs = [a(outputs[k]) for k, a in node.in_node_adapters.items() if not node.is_input_muted(k)]
+            inputs = [self.tensor_adaptors['%s->%s' % (k, key)](outputs[k]) for k in self.predecessors(key) if not self.is_input_muted(k, key)]
             assert len(inputs)
             if len(inputs) > 1:
                 x = torch.sum(torch.stack(inputs, dim=self.channel_dim), dim=self.channel_dim)
             else:
                 x = inputs[0]
-            assert x.shape[1:] == node.in_dim, str((x.shape, key, len(inputs), len(node.in_node_adapters)))
+            assert x.shape[1:] == self.nodes[key]['in_dim'], str((x.shape, key, len(inputs)))
             try:
                 x = node(x)
             except:
                 print(outputs.keys())
                 print(key)
-                print(node.in_dim)
-                print(node.in_node_adapters)
                 raise
             outputs[key] = x
         return x

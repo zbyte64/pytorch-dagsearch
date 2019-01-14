@@ -34,7 +34,7 @@ for s in reversed([
      (1, 5, 5),
      out_dim
     ]):
-    g.create_node(s)
+    g.create_hypercell(s)
 x, _ = next(iter(data_loader))
 
 world = World(g, data_loader, validata_loader, nn.CrossEntropyLoss(), initial_gas=60*5)
