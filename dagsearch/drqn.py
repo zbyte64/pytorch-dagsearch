@@ -81,7 +81,8 @@ EPS_END = 0.05
 EPS_DECAY = 200
 TARGET_UPDATE = 10
 
-class Trainer(object):
+
+class Trainer(object): #Actor?
     def __init__(self, world, env):
         self.world = world
         self.env = env
@@ -89,9 +90,10 @@ class Trainer(object):
         self.action_size = len(world.actions())
         self.hidden_size = 100
         self.hidden_layers = 1
-        self.policy_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
-        self.target_net = DRQN(self.world_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
-        self.memory = ReplayMemory(100000)
+        self.dqn_size = self.world_size + self.action_size
+        self.policy_net = DRQN(self.dqn_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
+        self.target_net = DRQN(self.dqn_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
+        self.memory = ReplayMemory(10000)
         self.optimizer = optim.RMSprop(self.policy_net.parameters())
         self.steps_done = 0
         self.score_board = []
@@ -186,7 +188,7 @@ class Trainer(object):
         self.target_net.eval()
         self.optimizer.zero_grad()
 
-        state = self.env.observe()
+        state = torch.cat((self.env.observe(), torch.zeros(1, self.action_size)), dim=1)
         for i in range(iterations):
             # Select and perform an action
             prior_hidden_state = self._hidden_state
@@ -196,8 +198,11 @@ class Trainer(object):
             if episode_over:
                 print('episode over')
                 self._hidden_state = self._make_hidden_state()
+                self.score_model()
+                ob = self.env.reset()
+            
             #print(action.item(), reward, episode_over, info)
-            next_state = ob
+            next_state = torch.cat((ob, torch.eye(self.action_size)[action].view(1, -1)), dim=1)
             # Store the transition in memory
             self.memory.push(state, action.to(device), next_state, reward, prior_hidden_state)
             state = next_state
@@ -208,9 +213,6 @@ class Trainer(object):
             if i % TARGET_UPDATE == 0:
                 self.target_net.load_state_dict(self.policy_net.state_dict())
                 print('Trainer Loss %.4f , Loss %.4f , Gas %.2f' % (trainer_loss, info['loss'], info['gas']))
-            if episode_over:
-                self.score_model()
-                self.env.reset()
 
     def score_model(self):
         #self.world.mov_fork(self.world)
