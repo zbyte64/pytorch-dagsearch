@@ -20,11 +20,11 @@ final_image_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (1.0,))
 ])
-data = datasets.MNIST('./MNIST', download=True, transform=final_image_transform, train=True)
+data = datasets.FashionMNIST('./FashionMNIST', download=True, transform=final_image_transform, train=True)
 data_loader = torch.utils.data.DataLoader(data,
                                           batch_size=batch_size,
                                           shuffle=True,)
-validata = datasets.MNIST('./MNIST', download=True, transform=final_image_transform, train=False)
+validata = datasets.FashionMNIST('./FashionMNIST', download=True, transform=final_image_transform, train=False)
 validata_loader = torch.utils.data.DataLoader(validata,
                                           batch_size=batch_size,
                                           shuffle=True,)

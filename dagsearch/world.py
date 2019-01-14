@@ -130,8 +130,12 @@ class World(object):
         ])
         max_volume = self.graph.in_volume
         #reports the type of cell (one hot)
-        cell_state = self.current_cell.observe()
-        cell_muted = self.current_node.muted_cells[self.cell_index]
+        if self.current_cell:
+            cell_state = self.current_cell.observe()
+            cell_muted = self.current_node.muted_cells[self.cell_index]
+        else:
+            cell_state = torch.zeros(len(self.graph.cell_types))
+            cell_muted = 1.
         input_muted = 1. if self.graph.is_input_muted(self.input_key, self.node_key) else 0.
         param_state = self.get_param_state()
         if self.param_index >= param_state.shape[0]:
