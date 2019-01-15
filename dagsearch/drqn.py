@@ -14,8 +14,9 @@ import torch.optim as optim
 import torch.nn.functional as F
 from .env import *
 
+
 Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward', 'hidden_state'))
+                        ('state', 'action', 'next_state', 'reward'))
 
 
 class ReplayMemory(object):
@@ -27,7 +28,7 @@ class ReplayMemory(object):
 
     def push(self, *args):
         """Saves a transition."""
-        t = Transition(*args)
+        t = args #Transition(*args)
         if len(self.memory) < self.capacity:
             self.memory.append(t)
         else:
@@ -39,39 +40,66 @@ class ReplayMemory(object):
 
     def __len__(self):
         return len(self.memory)
-    
-    def save(self, name='memory.pickle'):
-        outs = open(name, 'wb')
-        pickle.dump(self.memory, outs)
-    
-    def load(self, name='memory.pickle'):
-        ins = open(name, 'rb')
-        self.memory = pickle.load(ins)
 
 
-class DRQN(nn.Module):
-    def __init__(self, world_size, action_size, hidden_size=8, num_layers=1):
-        super(DRQN, self).__init__()
-        self.embedding_size = world_size * 2
-        self.hidden_size = hidden_size
+class NavEmbed(nn.Module):
+    def __init__(self, world_size, action_size, num_layers=2):
+        super(NavEmbed, self).__init__()
+        self.hidden_size = world_size
         self.num_layers = num_layers
-        self.f1 = nn.Linear(world_size, world_size * 2)
-        self.f2 = nn.Linear(world_size * 2, self.embedding_size*num_layers)
-        self.lstm = nn.LSTM(self.embedding_size, self.hidden_size,
+        self.input_size = world_size + action_size
+        self.lstm = nn.LSTM(self.input_size, self.hidden_size,
             num_layers=num_layers, batch_first=True)
-        self.head = nn.Linear(self.hidden_size*num_layers, action_size)
+        self.hidden_state = None
+        self.add_module('lstm', self.lstm)
+        
+    def generate_hidden_state(self, bs=1):
+        return (
+            torch.zeros(self.num_layers, bs, self.hidden_size).to(device),
+            torch.zeros(self.num_layers, bs, self.hidden_size).to(device)
+        )
+    
+    def forward(self, x, action, hidden_state=None):
+        if hidden_state is None:
+            if self.hidden_state is None:
+                self.hidden_state = self.generate_hidden_state(x.shape[0])
+            hidden_state = self.hidden_state
+            manage_hidden_state = True
+        else:
+            manage_hidden_state = False
+        if len(x.shape) == 2:
+            x = x.view((x.shape[0], 1, -1))
+            action = action.view((x.shape[0], 1, -1))
+            reshape = True
+        else:
+            reshape = False
+        n_x = torch.cat([x, action], dim=2)
+        #print(n_x.shape, hidden_state[0].shape, x.shape, action.shape, self.input_size)
+        n_x, hidden = self.lstm(n_x, hidden_state)
+        hidden[0][torch.isnan(hidden[0])] = 0.
+        hidden[1][torch.isnan(hidden[1])] = 0.
+        n_x = n_x + x
+        if reshape:
+            n_x = n_x.contiguous().view((x.shape[0], -1))
+        if manage_hidden_state:
+            self.hidden_state = hidden
+        return n_x, hidden[0].view(x.shape[0], -1)
+
+
+class DQN(nn.Module):
+    def __init__(self, world_size, action_size):
+        super(DQN, self).__init__()
+        self.f1 = nn.Linear(world_size, world_size // 2)
+        self.f2 = nn.Linear(world_size // 2, world_size // 4)
+        self.head = nn.Linear(world_size // 4, action_size)
         self.add_module('f1', self.f1)
         self.add_module('f2', self.f2)
-        self.add_module('lstm', self.lstm)
         self.add_module('head', self.head)
 
-    def forward(self, x, hidden):
+    def forward(self, x):
         x = F.relu(self.f1(x))
         x = F.relu(self.f2(x))
-        x = x.view((x.shape[0], self.num_layers, self.embedding_size))
-        x, hidden = self.lstm(x, hidden)
-        x = x.contiguous().view((x.shape[0], -1))
-        return self.head(x), hidden
+        return self.head(x)
 
 
 BATCH_SIZE = 128
@@ -88,43 +116,39 @@ class Trainer(object): #Actor?
         self.env = env
         self.world_size = world.observe().shape[0]
         self.action_size = len(world.actions())
-        self.hidden_size = 100
-        self.hidden_layers = 1
-        self.dqn_size = self.world_size + self.action_size
-        self.policy_net = DRQN(self.dqn_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
-        self.target_net = DRQN(self.dqn_size, self.action_size, self.hidden_size, self.hidden_layers).to(device)
+        self.embeding_layers = 2
+        self.dqn_size = self.world_size + self.world_size * self.embeding_layers
+        self.embeding = NavEmbed(self.world_size, self.action_size, num_layers=self.embeding_layers).to(device)
+        self.policy_net = DQN(self.dqn_size, self.action_size).to(device)
+        self.target_net = DQN(self.dqn_size, self.action_size).to(device)
         self.memory = ReplayMemory(10000)
         self.optimizer = optim.RMSprop(self.policy_net.parameters())
+        self.embeding_optimizer = optim.RMSprop(self.embeding.parameters())
+        self.embeding_criterion = nn.MSELoss(reduction='sum')
+        self.embeding_memory = ReplayMemory(10000)
         self.steps_done = 0
-        self.score_board = []
-        self._hidden_state = self._make_hidden_state()
-    
-    def _make_hidden_state(self, bs=1):
-        return (
-            torch.zeros(self.hidden_layers, bs, self.hidden_size).to(device),
-            torch.zeros(self.hidden_layers, bs, self.hidden_size).to(device)
-        )
-
+        
     def select_action(self, state):
         sample = random.random()
         eps_threshold = EPS_END + (EPS_START - EPS_END) * \
             math.exp(-1. * self.steps_done / EPS_DECAY)
         self.steps_done += 1
         with torch.no_grad():
-            #_hs_has_nan = torch.sum(torch.stack((torch.isnan(self._hidden_state[0]), torch.isnan(self._hidden_state[1])))).item()
-            #assert not _hs_has_nan, str(self._hidden_state)
-            y, hidden = self.policy_net(state.to(device), self._hidden_state)
-            hidden[0][torch.isnan(hidden[0])] = 0.
-            hidden[1][torch.isnan(hidden[1])] = 0.
             if sample > eps_threshold:   
+                y = self.policy_net(state)
                 a = y.max(1, keepdim=True)[1]
             else:
                 a = torch.tensor([[self.env.action_space.sample()]], dtype=torch.int64)
-            self._hidden_state = hidden
-            #_hs_has_nan = torch.sum(torch.stack((torch.isnan(self._hidden_state[0]), torch.isnan(self._hidden_state[1])))).item()
-            #assert not _hs_has_nan, str(self._hidden_state)
-            return a, self._hidden_state
-
+            return a
+    
+    def encode_world(self, state, prior_action):
+        state = state.to(device)
+        with torch.no_grad():
+            prior_action_encode = torch.eye(self.action_size)[int(prior_action.cpu().item())].view(1, -1).type(torch.float32).to(device)
+            p_next_state, state_embed = self.embeding(state, prior_action_encode)
+        state_embed = state_embed.view(state.shape[0], -1)
+        obs = torch.cat([state, state_embed.detach()], dim=1).to(device)
+        return obs
 
     def optimize_trainer_model(self):
         if len(self.memory) < BATCH_SIZE:
@@ -145,26 +169,12 @@ class Trainer(object): #Actor?
         action_batch = torch.cat(batch.action).to(device)
         reward_batch = torch.tensor(batch.reward, dtype=torch.float32).to(device)
         #reconstruct prior memory for training policy net
-        hidden_state = (
-            torch.cat([b[0] for b in batch.hidden_state], dim=1).to(device),
-            torch.cat([b[1] for b in batch.hidden_state], dim=1).to(device)
-        )
-        _hs_has_nan = torch.sum(torch.stack((torch.isnan(hidden_state[0]), torch.isnan(hidden_state[1])))).item()
-        assert not _hs_has_nan, str(hidden_state)
-        #this emits a state which can be fed into target net, but should we?
-        state_action_values, next_hidden_state = self.policy_net(state_batch, hidden_state)
-        next_hidden_state[0][torch.isnan(next_hidden_state[0])] = 0.
-        next_hidden_state[1][torch.isnan(next_hidden_state[1])] = 0.
-        _hs_has_nan = torch.sum(torch.stack((torch.isnan(next_hidden_state[0]), torch.isnan(next_hidden_state[1])))).item()
-        assert not _hs_has_nan, str(next_hidden_state)
+                #this emits a state which can be fed into target net, but should we?
+        state_action_values = self.policy_net(state_batch)
         state_action_values = state_action_values.gather(1, action_batch)
 
         next_state_values = torch.zeros(BATCH_SIZE).to(device)
-        #next_hidden_state = torch.cat([h for s, h in zip(batch.next_state, batch.hidden_state)
-        #                                            if s is not None])
-        #next_hidden_state[0][torch.isnan(next_hidden_state[0])] = 0.
-        #next_hidden_state[1][torch.isnan(next_hidden_state[1])] = 0.
-        next_state_values[non_final_mask] = self.target_net(non_final_next_states, next_hidden_state)[0].max(1)[0].detach()
+        next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1)[0].detach()
         # Compute the expected Q values
         expected_state_action_values = (next_state_values * GAMMA) + reward_batch
         expected_state_action_values[torch.isnan(expected_state_action_values)] = self.env.action_space.sample()
@@ -182,45 +192,84 @@ class Trainer(object): #Actor?
             param.grad.data.clamp_(-1, 1)
         self.optimizer.step()
         return _loss
+    
+    def optimize_embeding_model(self, max_len=BATCH_SIZE):
+        bs = min(len(self.embeding_memory), 16)
+        if not bs:
+            return -1.
+        self.embeding_optimizer.zero_grad()
+        #[[(state, action)]]
+        sessions = self.embeding_memory.sample(bs)
+        #=> [(states, actions)] => states, actions
+        states = list()
+        actions = list()
+        for session in sessions:
+            #[(state, action)]
+            session = session[0] #wat?
+            if len(session) < 2:
+                continue
+            for s_states, s_actions in zip(*zip(*session)):
+                #s = torch.tensor(s_states)
+                s = torch.split(s_states.detach(), max_len)
+                states.extend(s)
+                #a = torch.tensor(s_actions)
+                a = torch.split(s_actions.detach(), max_len)
+                actions.extend(a)
+        if len(states) > BATCH_SIZE:
+            sample = random.sample(list(zip(states, actions)), BATCH_SIZE+1)
+            states, actions = zip(*sample)
+        if len(states) < 2:
+            return -1
+        state = torch.nn.utils.rnn.pad_sequence(states[:-1], batch_first=True)
+        action = torch.nn.utils.rnn.pad_sequence(actions[:-1], batch_first=True)
+        action_encode = torch.eye(self.action_size)[action].squeeze(2).type(torch.float32).to(device)
+        next_state = torch.nn.utils.rnn.pad_sequence(states[1:], batch_first=True)
+        hidden_state = self.embeding.generate_hidden_state(state.shape[0])
+        p_next_state, embeding = self.embeding(state, action_encode, hidden_state)
+        loss = self.embeding_criterion(p_next_state, next_state)
+        loss.backward()
+        self.embeding_optimizer.step()
+        return loss.item()
 
     def train(self, iterations=1000):
+        self.embeding.train()
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
         self.optimizer.zero_grad()
 
-        state = torch.cat((self.env.observe(), torch.zeros(1, self.action_size)), dim=1)
+        state = self.env.observe().to(device)
+        action = torch.zeros(1,1).to(device)
+        #create embed repr of world by predicting action result
+        obs = self.encode_world(state, action)
+        session_memory = list()
+        self.embeding_memory.push(session_memory)
         for i in range(iterations):
             # Select and perform an action
-            prior_hidden_state = self._hidden_state
-            action, next_hidden_state = self.select_action(state)
+            action = self.select_action(obs)
             assert action.dtype == torch.int64, str(action.dtype)
-            ob, reward, episode_over, info = self.env.step(int(action.item()))
+            next_state, reward, episode_over, info = self.env.step(int(action.item()))
+            session_memory.append((state, action))
+            next_state.to(device)
             if episode_over:
                 print('episode over')
-                self._hidden_state = self._make_hidden_state()
-                self.score_model()
-                ob = self.env.reset()
-            
-            #print(action.item(), reward, episode_over, info)
-            next_state = torch.cat((ob, torch.eye(self.action_size)[action].view(1, -1)), dim=1)
+                self.prior_state = None
+                self.embeding.hidden_state = None
+                session_memory.append((next_state, action))
+                session_memory = list()
+                self.embeding_memory.push(session_memory)
+                state = self.env.reset().to(device)
+                next_obs = self.encode_world(state, torch.zeros(1,1).to(device))
+            else:
+                next_obs = self.encode_world(next_state, action)
             # Store the transition in memory
-            self.memory.push(state, action.to(device), next_state, reward, prior_hidden_state)
-            state = next_state
+            self.memory.push(obs, action.to(device), next_obs, reward)
+            
+            obs = next_obs
 
             # Perform one step of the optimization (on the target network)
+            embedding_loss = self.optimize_embeding_model()
             trainer_loss = self.optimize_trainer_model()
             # Update the target network, copying all weights and biases in DQN
             if i % TARGET_UPDATE == 0:
                 self.target_net.load_state_dict(self.policy_net.state_dict())
-                print('Trainer Loss %.4f , Loss %.4f , Gas %.2f' % (trainer_loss, info['loss'], info['gas']))
-
-    def score_model(self):
-        #self.world.mov_fork(self.world)
-        valid_data = next(self.world.valid_data)
-        x, y = valid_data
-        x = x.to(device)
-        y = y.to(device)
-        py = self.world.graph(x)
-        loss = self.world.criterion(py, y)
-        print('Validation loss:', loss)
-        #.heappush(self.score_board, (loss, self.world.graph))
+                print('Trainer Loss %.4f , Embedding Loss %.4f , Loss %.4f , Gas %.2f' % (trainer_loss, embedding_loss, info['loss'], info['gas']))

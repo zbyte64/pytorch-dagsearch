@@ -8,6 +8,8 @@ from torchvision import datasets, transforms
 
 from torch import nn
 import torch
+import networkx as nx
+import matplotlib.pyplot as plt
 #from torchviz import make_dot, make_dot_from_trace
 
 cell_types = list(CELL_TYPES.keys())
@@ -49,11 +51,15 @@ if os.path.exists('./trainer.pth'):
     trainer.policy_net.load_state_dict(torch.load('./trainer.pth'))
 #trainer.train(5)
 #env.render()
-if os.path.exists('./memory.pickle'):
-    trainer.memory.load()
 while True:
     trainer.train(10000)
     #env.render()
     print('saving...')
     torch.save(trainer.policy_net.state_dict(), './trainer.pth')
-    trainer.memory.save()
+    
+    l, g = world.scoreboard.leaders[0]
+    labels=dict((n,'%s %s' % (n, ['%s: %s' % (k,v) for k, v in d.items()])) for n,d in g.nodes(data=True))
+    nx.draw(g, node_size=100, labels=labels)
+    #plt.subplot(400)
+    print('Loss:', l)
+    plt.show()

@@ -12,6 +12,8 @@ from tensorboardX import SummaryWriter
 from collections import OrderedDict
 
 from .env import *
+from .scoreboard import Scoreboard
+
 
 def inf_data(dataloader):
     i = None
@@ -49,6 +51,7 @@ class World(object):
         self.one_hot_param = one_hot(10)
         self.ratcheting = ratcheting
         self.add_threshold = add_threshold
+        self.scoreboard = Scoreboard(self.criterion, self.valid_data, top_k=10)
 
     def rebuild(self):
         self.graph = copy.deepcopy(self.initial_graph)
@@ -184,11 +187,9 @@ class World(object):
         self.gas -= .015
         r = actions[action_idx](self)
         if r is None:
-            if self.current_loss is None:
-                r = 0.
-            else:
-                r = (self.initial_loss - self.current_loss) / self.initial_loss
+            r = 0.
         if self.gas <= 0:
+            self.scoreboard.record(self.graph)
             #add final score
             if self.current_loss is not None:
                 r += (self.initial_loss - self.current_loss) / self.initial_loss
@@ -284,6 +285,7 @@ class World(object):
         if self.ratcheting or keep_current:
             self.fork_graph(keep_current)
             self.page_node(world, 0)
+        self.scoreboard.record(self.graph)
         self._forked_graph_loss = 0.0
         self._graph_loss = 0.0
         self.cooldown = 10
@@ -406,12 +408,15 @@ class World(object):
     def mov_add_node(self, world):
         if self.current_bench is None or (self.current_loss / self.current_bench) > self.add_threshold:
             return
+        self.scoreboard.record(self.graph)
         self.current_bench = self.current_loss
         size1, size2 = self.param_state[0:2]
+        link_from = self.graph.nodes[self.input_key]
         link_to = self.graph.nodes[self.node_key]
         print('#'*20)
-        print('add_node', size1, size2, len(link_to['in_dim']))
-        in_dim = link_to['in_dim']
+        print('add_node', size1, size2, link_from, link_to)
+        in_dim = link_from['out_dim']
+        out_dim = link_to['in_dim']
         in_volume = np.prod(in_dim)
         if len(in_dim) == 1: 
             #1D
@@ -432,7 +437,7 @@ class World(object):
             in_dim = (c, wh, wh)
         new_index = len(self.graph.tensor_nodes)
         new_key = str(new_index)
-        new_node = self.graph.create_hypercell(in_dim, key=new_key)
+        new_node = self.graph.create_hypercell(in_dim, out_dim, key=new_key)
         new_node.apply(self.init_weights)
         self.graph[new_key][self.node_key]['muted'] = False
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
