@@ -188,11 +188,15 @@ class World(object):
         r = actions[action_idx](self)
         if r is None:
             r = 0.
+            #idle cost
+            self.gas -= .15
         if self.gas <= 0:
             self.scoreboard.record(self.graph)
             #add final score
             if self.current_loss is not None:
                 r += (self.initial_loss - self.current_loss) / self.initial_loss
+            else:
+                r -= 10.
         r = torch.tanh(torch.tensor(r)).item()
         info = {
             'loss': self.current_loss or 0.,
