@@ -39,7 +39,7 @@ for s in reversed([
     g.create_hypercell(s)
 x, _ = next(iter(data_loader))
 
-world = World(g, data_loader, validata_loader, nn.CrossEntropyLoss(), initial_gas=60*5)
+world = World(g, data_loader, validata_loader, nn.CrossEntropyLoss())
 #dot = make_dot(world.graph(x), params=dict(world.graph.named_parameters()))
 #dot.view()
 #exit()

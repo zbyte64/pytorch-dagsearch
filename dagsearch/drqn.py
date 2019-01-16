@@ -50,7 +50,7 @@ class NavEmbed(nn.Module):
         self.num_layers = num_layers
         self.input_size = world_size + action_size
         self.lstm = nn.LSTM(self.input_size, self.hidden_size,
-            num_layers=num_layers, batch_first=True)
+            num_layers=num_layers)
         self.hidden_state = None
         self.add_module('lstm', self.lstm)
         
@@ -69,8 +69,9 @@ class NavEmbed(nn.Module):
         else:
             manage_hidden_state = False
         if len(x.shape) == 2:
-            x = x.view((x.shape[0], 1, -1))
-            action = action.view((x.shape[0], 1, -1))
+            # M x B x V
+            x = x.view((1, x.shape[0], -1))
+            action = action.view((1, x.shape[0], -1))
             reshape = True
         else:
             reshape = False
@@ -85,7 +86,9 @@ class NavEmbed(nn.Module):
         z = torch.distributions.normal.Normal(mu, scale)
         if manage_hidden_state:
             self.hidden_state = hidden
-        return z, hidden[0].view(x.shape[0], -1)
+        if reshape:
+            hidden = hidden[0].view(x.shape[1], -1)
+        return z, hidden
 
 
 class DQN(nn.Module):
@@ -201,9 +204,10 @@ class Trainer(object): #Actor?
             return -1.
         #[[(state, action)]]
         self.embeding.train()
+        self.embeding_optimizer.zero_grad()
         sessions = self.embeding_memory.sample(bs)
         #=> [(states, actions)] => states, actions
-        loss = 0.
+        loss = torch.tensor(0., device=device)
         updates = False
         for session in sessions:
             #[(state, action)]
@@ -211,20 +215,20 @@ class Trainer(object): #Actor?
             #print(len(session[0]))
             if len(session) < 2:
                 continue
-            self.embeding_optimizer.zero_grad()
-            states = torch.stack([x[0].to(device) for x in session], dim=1)
-            actions = torch.stack([x[1].to(device) for x in session], dim=1)
+            states = torch.stack([x[0].to(device) for x in session], dim=1).view(len(session), 1, -1)
+            actions = torch.stack([x[1].to(device) for x in session], dim=1).view(len(session), 1, -1)
             action_encode = torch.eye(self.action_size)[actions].squeeze(2).type(torch.float32).to(device)
             hidden_state = self.embeding.generate_hidden_state(1)
-            z, _ = self.embeding(states[:,:-1], action_encode[:,:-1], hidden_state)
-            next_state = states[:,1:].detach()
+            z, _ = self.embeding(states[:-1], action_encode[:-1], hidden_state)
+            next_state = states[1:].detach()
             #_loss = self.embeding_criterion(z.sample(), next_state)
             _loss = 1 / (1 + z.log_prob(next_state))
             _loss = torch.mean(_loss)
-            _loss.backward()
+            loss = loss + _loss
+        if updates:
+            loss.backward()
             self.embeding_optimizer.step()
-            loss += _loss.item()
-        return loss
+        return loss.item()
 
     def train(self, iterations=1000):
         self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -232,7 +236,6 @@ class Trainer(object): #Actor?
         self.optimizer.zero_grad()
 
         #start with a short episode
-        self.world.gas = 30
         state = self.env.observe().to(device)
         action = torch.zeros(1,1).to(device)
         #create embed repr of world by predicting action result
@@ -253,9 +256,7 @@ class Trainer(object): #Actor?
                 session_memory.append((next_state, action))
                 session_memory = list()
                 self.embeding_memory.push(session_memory)
-                self.env.reset()
-                self.world.gas = random.randint(30, self.world.initial_gas)
-                state = self.env.observe().to(device)
+                state = self.env.reset().to(device)
                 next_obs = self.encode_world(state, torch.zeros(1,1).to(device))
             else:
                 next_obs = self.encode_world(next_state, action)
@@ -265,9 +266,9 @@ class Trainer(object): #Actor?
             obs = next_obs
 
             # Perform one step of the optimization (on the target network)
-            embedding_loss = self.optimize_embeding_model()
             trainer_loss = self.optimize_trainer_model()
             # Update the target network, copying all weights and biases in DQN
             if i % TARGET_UPDATE == 0:
+                embedding_loss = self.optimize_embeding_model()
                 self.target_net.load_state_dict(self.policy_net.state_dict())
                 print('Trainer Loss %.4f , Embedding Loss %.4f , Loss %.4f , Gas %.2f' % (trainer_loss, embedding_loss, info['loss'], info['gas']))

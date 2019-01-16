@@ -37,10 +37,11 @@ def one_hot(num_classes):
 
 class World(object):
     def __init__(self, graph, test_dataloader, valid_dataloader, loss_fn, 
-    initial_gas=600, ratcheting=True, add_threshold=.7):
+    initial_gas=60, max_gas=1000, ratcheting=True, add_threshold=.7):
         super(World, self).__init__()
         self.initial_graph = graph
         self.initial_gas = initial_gas
+        self.max_gas = max_gas
         self.criterion = loss_fn
         self.test_data = inf_data(test_dataloader)
         self.valid_data = inf_data(valid_dataloader)
@@ -377,16 +378,17 @@ class World(object):
             self.lowest_loss = g_loss
             self.initial_loss = g_loss
             self.current_bench = g_loss
+            reward = 1.
         else:
             #scale loss relative to initial loss
             l_delta = (self.lowest_loss - g_loss) / self.initial_loss
             reward = (self.initial_loss - self.current_loss * 0.98) / self.initial_loss
             #special rewards for new low loss
             if l_delta > 0:
-                reward += l_delta
+                reward += l_delta + 1
+                gas_curve = lambda _x: 4 * (_x ** 3) * self.max_gas
+                self.gas += gas_curve(1-g_loss/self.initial_loss) - gas_curve(1-self.lowest_loss/self.initial_loss)
                 self.lowest_loss = g_loss
-                #may earn back 100% of initial gas if loss drops 100%
-                self.gas += l_delta * self.initial_gas
         self.current_loss = g_loss
         return reward
 
