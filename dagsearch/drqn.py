@@ -52,6 +52,7 @@ class NavEmbed(nn.Module):
         self.lstm = nn.LSTM(self.input_size, self.hidden_size,
             num_layers=num_layers)
         self.hidden_state = None
+        self.discrete_mask = torch.ones(world_size, device=device, dtype=torch.int64)
         self.add_module('lstm', self.lstm)
         
     def generate_hidden_state(self, bs=1):
@@ -80,15 +81,28 @@ class NavEmbed(nn.Module):
         n_x, hidden = self.lstm(n_x, hidden_state)
         #hidden[0][torch.isnan(hidden[0])] = 0.
         #hidden[1][torch.isnan(hidden[1])] = 0.
-        mu, scale = n_x[:,:,:self.world_size], n_x[:,:,self.world_size:]
-        scale = torch.sigmoid(scale) + .0000001 
-        mu = mu + x
-        z = torch.distributions.normal.Normal(mu, scale)
+        z1, z2 = n_x[:,:,:self.world_size], n_x[:,:,self.world_size:]
+        TINY = 1e-8
+        probs = torch.clamp(torch.sigmoid(z1 + z2), TINY, 1 - TINY)
+        scale = torch.sigmoid(z2) + TINY
+        mu = z1 + x
+        cz = torch.distributions.normal.Normal(mu, scale)
+        dz = torch.distributions.bernoulli.Bernoulli(probs=probs)
+        def log_prob(sample):
+            c_prob = cz.log_prob(sample)
+            d_prob = dz.log_prob(sample)
+            #assume sample is discrete/bernoulli otherwise normal dist
+            c_mask = torch.max(torch.isnan(d_prob), dim=0, keepdim=True)[0].squeeze()
+            self.discrete_mask[c_mask] = 0
+            d_mask = self.discrete_mask
+            c_mask = 1 - d_mask
+            prob = torch.cat([c_prob[c_mask], d_prob[d_mask]], dim=-1)
+            return prob
         if manage_hidden_state:
             self.hidden_state = hidden
         if reshape:
             hidden = hidden[0].view(x.shape[1], -1)
-        return z, hidden
+        return log_prob, hidden
 
 
 class DQN(nn.Module):
@@ -219,10 +233,9 @@ class Trainer(object): #Actor?
             actions = torch.stack([x[1].to(device) for x in session], dim=1).view(len(session), 1, -1)
             action_encode = torch.eye(self.action_size)[actions].squeeze(2).type(torch.float32).to(device)
             hidden_state = self.embeding.generate_hidden_state(1)
-            z, _ = self.embeding(states[:-1], action_encode[:-1], hidden_state)
+            log_prob, _ = self.embeding(states[:-1], action_encode[:-1], hidden_state)
             next_state = states[1:].detach()
-            #_loss = self.embeding_criterion(z.sample(), next_state)
-            _loss = 1 / (1 + z.log_prob(next_state))
+            _loss = -log_prob(next_state)
             _loss = torch.mean(_loss)
             loss = loss + _loss
         if updates:

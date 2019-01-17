@@ -157,7 +157,7 @@ class World(object):
             _c(self._graph_loss),
             _c(self._forked_graph_loss),
             _c(self.ticks),
-            self.gas / self.initial_gas,
+            self.gas / self.max_gas,
             self.cooldown / 100,
             _c(len(self.graph.tensor_nodes)),
             _c(len(self.graph.in_dim)),
@@ -386,8 +386,12 @@ class World(object):
             #special rewards for new low loss
             if l_delta > 0:
                 reward += l_delta + 1
-                gas_curve = lambda _x: 4 * (_x ** 3) * self.max_gas
-                self.gas += gas_curve(1-g_loss/self.initial_loss) - gas_curve(1-self.lowest_loss/self.initial_loss)
+                #integral [0,1] of gas curve should be = 1
+                #gas curve = 3x ** 2
+                gas_area = lambda _loss: (1 - _loss / self.initial_loss) ** 3 
+                self.gas += (gas_area(g_loss) - gas_area(self.lowest_loss)) * self.max_gas
+                #for broken gas curves:
+                self.gas = min(self.max_gas, self.gas)
                 self.lowest_loss = g_loss
         self.current_loss = g_loss
         return reward
