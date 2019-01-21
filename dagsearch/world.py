@@ -13,38 +13,17 @@ from collections import OrderedDict
 
 from .env import *
 from .scoreboard import Scoreboard
-
-
-def inf_data(dataloader):
-    i = None
-    while True:
-        if i is None:
-            i = iter(dataloader)
-        try:
-            yield next(i)
-        except StopIteration:
-            i = None
-
-
-def one_hot(num_classes):
-    y = torch.eye(num_classes)
-    def f(labels):
-        if isinstance(labels, int):
-            return y[labels]
-        return y[labels.type(torch.int64)]
-    return f
+from .utils import one_hot
 
 
 class World(object):
-    def __init__(self, graph, test_dataloader, valid_dataloader, loss_fn, 
+    def __init__(self, graph, sample_loss, 
     initial_gas=60, max_gas=1000, ratcheting=True, add_threshold=.7):
         super(World, self).__init__()
         self.initial_graph = graph
         self.initial_gas = initial_gas
         self.max_gas = max_gas
-        self.criterion = loss_fn
-        self.test_data = inf_data(test_dataloader)
-        self.valid_data = inf_data(valid_dataloader)
+        self.criterion = sample_loss
         self.summary = SummaryWriter()
         self.rebuild()
         #self.summary.add_graph(self.graph, next(self.test_data)[0])
@@ -52,13 +31,12 @@ class World(object):
         self.one_hot_param = one_hot(10)
         self.ratcheting = ratcheting
         self.add_threshold = add_threshold
-        self.scoreboard = Scoreboard(self.criterion, self.valid_data, top_k=10)
+        self.scoreboard = Scoreboard(self.criterion, top_k=10)
 
     def rebuild(self):
         self.graph = copy.deepcopy(self.initial_graph)
         self.forked_graph = copy.deepcopy(self.initial_graph)
         self.graph_optimizer = optim.SGD(self.graph.parameters(), lr=0.1, momentum=0.9)
-        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.0001, momentum=0.9)
         self._graph_loss = 0.0
         self._forked_graph_loss = 0.0
         self.cooldown = 40
@@ -149,7 +127,7 @@ class World(object):
         #TODO convey overall network shape
         _c = lambda x: torch.sigmoid(torch.tensor(x, dtype=torch.float32))
         nav_state = torch.tensor([
-            (param_state[self.param_index] - p_min) / p_max,
+            (param_state[self.param_index] - p_min) / (p_max - p_min),
             cell_muted,
             input_muted,
             _c(self.current_loss or 0.),
@@ -186,6 +164,7 @@ class World(object):
         actions = self.actions()
         #print('Action:', actions[action_idx], direction)
         self.gas -= .015
+        assert action_idx < len(actions), 'Invalid action id: %s' % action_idx
         r = actions[action_idx](self)
         if r is None:
             r = 0.
@@ -291,8 +270,6 @@ class World(object):
             self.fork_graph(keep_current)
             self.page_node(world, 0)
         self.scoreboard.record(self.graph)
-        self._forked_graph_loss = 0.0
-        self._graph_loss = 0.0
         self.cooldown = 10
         return reward
 
@@ -302,82 +279,60 @@ class World(object):
         if keep_current:
             print('!'*20, 'Success!')
             winner = self.graph
+            self._forked_graph_loss = self._graph_loss
         else:
             winner = self.forked_graph
-            self.graph_optimizer = self.forked_graph_optimizer
+            self._graph_loss = self._forked_graph_loss
         self.graph = winner
         self.forked_graph = copy.deepcopy(winner)
-        self.forked_graph_optimizer = optim.SGD(self.forked_graph.parameters(), lr=0.0001, momentum=0.9)
-        #copy gradients?
-        self.forked_graph_optimizer.load_state_dict(self.graph_optimizer.state_dict())
 
     def adjust_learning_rate(self, lr):
         #lr = args.lr * (0.1 ** (epoch // 30))
         for param_group in self.graph_optimizer.param_groups:
             param_group['lr'] = lr
+    
+    def _sample_loss(self):
+        return self.criterion(self.graph)
+    
+    def train_iteration(self):
+        self.graph_optimizer.zero_grad()
+        g = -time.time()
+        graph_loss = self._sample_loss()
+        graph_loss.backward()
+        self.graph_optimizer.step()
+        g += time.time()
+
+        self._graph_loss += graph_loss.item()
+
+        g_loss = graph_loss.item()
+        self.gas -= g
+        abort = False
+        if g_loss in (float('inf'), float('nan')):
+            abort = True
+        self.summary.add_scalar('time_taken', g, global_step=self.ticks)
+        self.summary.add_scalars('loss', {
+            'main_loss': graph_loss.item(),
+        }, global_step=self.ticks)
+        self.ticks += 1
+        if abort:
+            self.gas = -1.
+        return abort, g_loss
 
     def train(self, iterations=1):
-        f_loss = 0.
         g_loss = 0.
         self.graph.to(device)
-        self.forked_graph.to(device)
         for i in range(iterations):
-            self.graph_optimizer.zero_grad()
-            self.forked_graph_optimizer.zero_grad()
-            x, y = next(self.test_data)
-            vx = x.to(device)
-            vy = y.to(device)
-
-            g = -time.time()
-            py = self.graph(vx)
-            graph_loss = self.criterion(py, vy)
-            graph_loss.backward()
-            self.graph_optimizer.step()
-            g += time.time()
-
-            forked_loss = self.criterion(self.forked_graph(vx), vy)
-            forked_loss.backward()
-            self.forked_graph_optimizer.step()
-
-            self._graph_loss += graph_loss.item()
-            self._forked_graph_loss += forked_loss.item()
-
-            f_loss += forked_loss.item()
-            g_loss += graph_loss.item()
-            self.gas -= g
-            abort = False
-            reset = False
-            if g_loss in (float('inf'), float('nan')):
-                reset = True
-                abort = f_loss in (float('inf'), float('nan'))
-            self.summary.add_scalar('time_taken', g, global_step=self.ticks)
-            self.summary.add_scalars('loss', {
-                'forked_loss': forked_loss.item(),
-                'main_loss': graph_loss.item(),
-            }, global_step=self.ticks)
-            self.summary.add_histogram('y', y.numpy(), global_step=self.ticks)
-            try:
-                self.summary.add_histogram('predicted_y', py.cpu().detach().numpy(), global_step=self.ticks)
-            except:
-                abort = True
-            #images = x[0]
-            #self.summary.add_images('x', images, global_step=self.ticks)
-            self.ticks += 1
-            if abort or reset:
-                if abort:
-                    self.gas = -1.
-                else:
-                    self.fork_graph()
-                return -1.
-            if self.gas <= 0:
-                break
+            abort, _loss = self.train_iteration()
+            if abort:
+                return -1
+            g_loss += _loss
         g_loss /= iterations
-        f_loss /= iterations
         reward = None
         if self.lowest_loss is None:
             self.lowest_loss = g_loss
             self.initial_loss = g_loss
             self.current_bench = g_loss
+            self._forked_graph_loss = self._graph_loss
             reward = 1.
         else:
             #scale loss relative to initial loss

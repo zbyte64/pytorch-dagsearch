@@ -178,11 +178,17 @@ class Graph(nn.Module, networkx.DiGraph): #TensorGraph? TorchGraph?
             else:
                 out_dim = in_dim
         cell_types = cell_types or self.cell_types
-        prior_nodes = list(self.tensor_nodes.items())
         node = HyperCell(in_dim=in_dim, out_dim=out_dim, channel_dim=self.channel_dim, cell_types=cell_types)
-        self.register_node(key, node, in_dim, out_dim)
-        self.register_adaptor('input', key, muteable=False, muted=False)
+        self.register_node(key, node, in_dim, out_dim, link_previous=link_previous)
+        return node
+
+    def register_node(self, key, node, in_dim, out_dim, link_previous=True):
+        assert key not in self.nodes
+        prior_nodes = list(self.tensor_nodes.items())
+        self.add_node(key, in_dim=in_dim, out_dim=out_dim)
+        self.tensor_nodes.update({key: node})
         if link_previous:
+            self.register_adaptor('input', key, muteable=False, muted=False)
             for i, (k, n) in enumerate(prior_nodes):
                 if i == 0:
                     self['input'][k]['muteable'] = True
@@ -190,12 +196,6 @@ class Graph(nn.Module, networkx.DiGraph): #TensorGraph? TorchGraph?
                     self.register_adaptor(key, k, muteable=False, muted=False)
                 else:
                     self.register_adaptor(key, k)
-        return node
-
-    def register_node(self, key, node, in_dim, out_dim):
-        assert key not in self.nodes
-        self.add_node(key, in_dim=in_dim, out_dim=out_dim)
-        self.tensor_nodes.update({key: node})
     
     def register_adaptor(self, src, to, muteable=True, muted=True):
         key = '%s->%s' % (src, to)
@@ -230,9 +230,11 @@ class Graph(nn.Module, networkx.DiGraph): #TensorGraph? TorchGraph?
             outputs[key] = x
         return x
 
-    @classmethod
-    def from_model(cls, model):
+    def add_sequential_model(self, model):
         '''
-        Converts an existing model into a graph
+        Converts an existing Sequential model into a graph
         '''
-        pass
+        for layer in reversed(model.layers):
+            key = str(len(self.tensor_nodes))
+            self.register_node(key, layer, in_dim, out_dim)
+            out_dim = in_dim
