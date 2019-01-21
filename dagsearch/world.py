@@ -298,21 +298,24 @@ class World(object):
         self.graph_optimizer.zero_grad()
         g = -time.time()
         graph_loss = self._sample_loss()
-        graph_loss.backward()
-        self.graph_optimizer.step()
+        if graph_loss is not None:
+            graph_loss.backward()
+            self.graph_optimizer.step()
         g += time.time()
 
-        self._graph_loss += graph_loss.item()
-
-        g_loss = graph_loss.item()
+        if graph_loss is not None:
+            self._graph_loss += graph_loss.item()
+            g_loss = graph_loss.item()  
+            self.summary.add_scalar('time_taken', g, global_step=self.ticks)
+            self.summary.add_scalars('loss', {
+                'main_loss': g_loss,
+            }, global_step=self.ticks)
+        else:
+            g_loss = None
         self.gas -= g
         abort = False
         if g_loss in (float('inf'), float('nan')):
-            abort = True
-        self.summary.add_scalar('time_taken', g, global_step=self.ticks)
-        self.summary.add_scalars('loss', {
-            'main_loss': graph_loss.item(),
-        }, global_step=self.ticks)
+            abort = True        
         self.ticks += 1
         if abort:
             self.gas = -1.
@@ -325,7 +328,10 @@ class World(object):
             abort, _loss = self.train_iteration()
             if abort:
                 return -1
-            g_loss += _loss
+            if _loss is not None:
+                g_loss += _loss
+            else:
+                return None
         g_loss /= iterations
         reward = None
         if self.lowest_loss is None:

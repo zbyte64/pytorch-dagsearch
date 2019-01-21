@@ -2,3 +2,4 @@ pytorch
 tensorboardX
 pytorchvision
 gym
+networkx

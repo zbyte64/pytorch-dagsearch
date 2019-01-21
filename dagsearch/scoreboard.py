@@ -16,7 +16,11 @@ class Scoreboard(object):
         with torch.no_grad():
             t_loss = 0.
             for i in range(n_trials):
-                loss = self.criterion(model).cpu().item()
-                t_loss += loss
+                loss = self.criterion(model)
+                if loss is None:
+                    continue
+                t_loss += loss.cpu().item()
+            if t_loss == 0. :
+                return
             self.leaders.append((t_loss/n_trials, model))
             self.leaders = heapq.nsmallest(self.top_k, self.leaders, key=lambda x: x[0])

@@ -3,12 +3,14 @@ from dagsearch.dag import Graph
 from dagsearch.world import World
 from dagsearch.cells import CELL_TYPES
 from dagsearch.dag_env import DagSearchEnv
-from dagsearch.drqn import Trainer
+from dagsearch.memory_embeding import SessionMemory, MemoryEmbed
+from dagsearch.agents import Agent, MetaAgent
 from dagsearch.utils import inf_data
 from dagsearch.env import *
 from torchvision import datasets, transforms
 
 from torch import nn
+import torch.optim as optim
 import torch
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -24,7 +26,7 @@ def env_from_dataloader(dataloader, n_classes):
     in_dim = x.shape[1:]
     out_dim = y.shape[1:]
     criterion = nn.CrossEntropyLoss()
-    g = Graph(cell_types, in_dim, channel_dim=1)
+    g = Graph(cell_types, in_dim, channel_dim=1).to(device)
     g.create_hypercell((n_classes,))
     g.create_hypercell((1, 5, 5))
     def sample_loss(graph):
@@ -39,25 +41,24 @@ def env_from_dataloader(dataloader, n_classes):
     return env
 
 
-def env_for_metatrain(envs):
+def meta_agent(envs, memory, embedding):
     #TODO 
     world_size = envs[0].world.observe().shape[0]
+    action_size = len(envs[0].world.actions())
     #include memory embeding 
     in_dim = (world_size*3,)
-    out_dim = (len(envs[0].world.actions()), )
-    g = Graph(cell_types, in_dim, channel_dim=1)
+    out_dim = (action_size, )
+    g = Graph(cell_types, in_dim, channel_dim=1).to(device)
     g.create_hypercell(out_dim)
     g.create_hypercell((world_size, ))
+    policy_net = g
     def sample_loss(graph):
-        #TODO huber loss from memory
-        #populate memory
-        for env in envs:
-            #TODO select action, iterate
-            pass
-        pass
+        #our loss is based on agent performance
+        return ma.child_agents[0].sample_loss()
     world = World(g, sample_loss=sample_loss, initial_gas=30, max_gas=600)
     env = DagSearchEnv(world)
-    return env
+    ma = MetaAgent(env, memory, embeding, policy_net, child_envs=envs)
+    return ma
 
 
 batch_size = 32
@@ -72,7 +73,23 @@ data_loader = torch.utils.data.DataLoader(data,
 
 #TODO CIFAR10, EMNIST, VHSN
 env = env_from_dataloader(data_loader, n_classes=10)
-trainer = Trainer(env)
+
+world_size = env.world.observe().shape[0]
+action_size = len(env.world.actions())
+embeding = MemoryEmbed(world_size, action_size).to(device)
+embeding_optimizer = optim.RMSprop(embeding.parameters())
+memory = SessionMemory(100)
+
+def optimize_memory():
+    #optimize embed space
+    embeding_optimizer.zero_grad()
+    e_loss = embeding.sample_loss(memory)
+    if len(e_loss):
+        e_loss = torch.mean(torch.stack(e_loss))
+        e_loss.backward()
+        embeding_optimizer.step()
+
+trainer = meta_agent([env], memory, embeding)
 import copy
 if os.path.exists('./trainer.pth'):
     trainer.policy_net.load_state_dict(torch.load('./trainer.pth'))
@@ -80,11 +97,13 @@ if os.path.exists('./embeding.pth'):
     trainer.embeding.load_state_dict(torch.load('./embeding.pth'))
 #trainer.train(5)
 #env.render()
-print(trainer.action_size)
+print(list(trainer.policy_net._modules.keys()))
 while True:
-    trainer.train(10000)
+    trainer.tick_for(1000)
+    optimize_memory()
+    #TODO upsert if trainer.sample_loss > trainer.world.scoreboard.leaders
     #env.render()
-    print('saving...')
+    #print('saving...')
     torch.save(trainer.policy_net.state_dict(), './trainer.pth')
     torch.save(trainer.embeding.state_dict(), './embeding.pth')
     '''

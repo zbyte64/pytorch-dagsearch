@@ -44,7 +44,7 @@ class Connector(nn.Module):
         self.in_volume = np.prod(self.in_dim)
         self.out_volume = np.prod(self.out_dim)
         self.model = self.make_model()
-        self.add_module('model', self.model)
+        #self.add_module('model', self.model)
         self._mean, self._std_dev = 0.0, 0.0
 
     def make_model(self):
@@ -118,7 +118,7 @@ class HyperCell(nn.Module):
         self.out_dim = out_dim
         self.out_volume = np.prod(out_dim)
         self.channel_dim = channel_dim
-        self.add_module('cells', self.cells)
+        #self.add_module('cells', self.cells)
 
     def forward(self, x):
         #print('Node connect:', x.shape, self.in_dim, self.out_dim)
@@ -160,13 +160,13 @@ class Graph(nn.Module, networkx.DiGraph): #TensorGraph? TorchGraph?
         self.channel_dim = channel_dim
         self.tensor_nodes = nn.ModuleDict()
         self.tensor_adaptors = nn.ModuleDict()
-        self.add_module('tensor_nodes', self.tensor_nodes)
-        self.add_module('tensor_adaptors', self.tensor_adaptors)
+        #self.add_module('tensor_nodes', self.tensor_nodes)
+        #self.add_module('tensor_adaptors', self.tensor_adaptors)
         self.add_node('input', out_dim=in_dim, in_dim=(0,))
     
-    def named_children(self):
-        from itertools import chain
-        return chain(self.tensor_nodes.named_children(), self.tensor_adaptors.named_children())
+    #def named_children(self):
+    #    from itertools import chain
+    #    return chain(self.tensor_nodes.named_children(), self.tensor_adaptors.named_children())
 
     def create_hypercell(self, in_dim, out_dim=None, cell_types=None, key=None, link_previous=True):
         if key is None:
