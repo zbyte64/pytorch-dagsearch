@@ -23,27 +23,26 @@ class ReplayMemory(object):
 
     def __len__(self):
         return len(self.memory)
-
+    
 
 class SessionMemory(object):
     def __init__(self, capacity):
         self.sessions = ReplayMemory(capacity)
         self.transitions = ReplayMemory(10000)
-        self.current_session = []
-        self.prior_obs = None
 
-    def record(self, state, action, next_state, reward, episode_over, obs):
-        self.current_session.append((state, action))
-        if self.prior_obs is not None:
-            self.transitions.push(self.prior_obs, self.prior_action, obs, reward)
-        self.prior_obs = obs
-        self.prior_action = action
+    def record(self, current_session, state, action, next_state, reward, episode_over, obs):
+        if current_session:
+            prior_obs = current_session[-1].pop()
+            prior_action = current_session[-1][1]
+            self.transitions.push(prior_obs, prior_action, obs, reward)
+        current_session.append([state, action, obs])
         if episode_over:
-            self.current_session.append((next_state, torch.zeros((1,1), dtype=torch.int64)))
-            self.sessions.push(self.current_session)
+            current_session[-1].pop() #no transition
+            current_session.append((next_state, torch.zeros((1,1), dtype=torch.int64)))
+            self.sessions.push(current_session)
             #self.save_session(str(self.memory.position), self.current_session)
-            self.current_session = []
-            self.prior_obs = None
+            return []
+        return current_session
     
     def sample_transitions(self, batch_size):
         return self.transitions.sample(batch_size)

@@ -18,7 +18,7 @@ from .utils import one_hot
 
 class World(object):
     def __init__(self, graph, sample_loss, 
-    initial_gas=60, max_gas=1000, ratcheting=True, add_threshold=.7):
+    initial_gas=60, max_gas=1000, ratcheting=True, add_threshold=.7, max_nodes=20):
         super(World, self).__init__()
         self.initial_graph = graph
         self.initial_gas = initial_gas
@@ -27,7 +27,8 @@ class World(object):
         self.summary = SummaryWriter()
         self.rebuild()
         #self.summary.add_graph(self.graph, next(self.test_data)[0])
-        self.one_hot_node = one_hot(20)
+        self.max_nodes = max_nodes
+        self.one_hot_node = one_hot(max_nodes)
         self.one_hot_param = one_hot(10)
         self.ratcheting = ratcheting
         self.add_threshold = add_threshold
@@ -164,7 +165,7 @@ class World(object):
         actions = self.actions()
         #print('Action:', actions[action_idx], direction)
         self.gas -= .015
-        assert action_idx < len(actions), 'Invalid action id: %s' % action_idx
+        assert action_idx < len(actions) and action_idx >= 0, 'Invalid action id: %s' % action_idx
         r = actions[action_idx](self)
         if r is None:
             r = 0.
@@ -300,6 +301,10 @@ class World(object):
         graph_loss = self._sample_loss()
         if graph_loss is not None:
             graph_loss.backward()
+            #apply gradient cliping
+            for param in self.graph.parameters():
+                if param.grad is not None:
+                    param.grad.data.clamp_(-1, 1)
             self.graph_optimizer.step()
         g += time.time()
 
@@ -378,6 +383,8 @@ class World(object):
 
     def mov_add_node(self, world):
         if self.current_bench is None or (self.current_loss / self.current_bench) > self.add_threshold:
+            return
+        if self.max_nodes >= len(self.graph.nodes):
             return
         self.scoreboard.record(self.graph)
         self.current_bench = self.current_loss

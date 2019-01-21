@@ -20,6 +20,10 @@ cell_types = list(CELL_TYPES.keys())
 
 
 def env_from_dataloader(dataloader, n_classes):
+    '''
+    Given a classification task/dataloader, 
+    returns an OpenAI gym environment for ENAS
+    '''
     data_iter = inf_data(dataloader)
     sample = next(data_iter)
     x, y = sample
@@ -42,7 +46,6 @@ def env_from_dataloader(dataloader, n_classes):
 
 
 def meta_agent(envs, memory, embedding):
-    #TODO 
     world_size = envs[0].world.observe().shape[0]
     action_size = len(envs[0].world.actions())
     #include memory embeding 
@@ -53,8 +56,8 @@ def meta_agent(envs, memory, embedding):
     g.create_hypercell((world_size, ))
     policy_net = g
     def sample_loss(graph):
-        #our loss is based on agent performance
-        return ma.child_agents[0].sample_loss()
+        #our world loss is our agent loss?
+        return ma.sample_loss()
     world = World(g, sample_loss=sample_loss, initial_gas=30, max_gas=600)
     env = DagSearchEnv(world)
     ma = MetaAgent(env, memory, embeding, policy_net, child_envs=envs)
@@ -66,16 +69,20 @@ final_image_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (1.0,))
 ])
-data = datasets.FashionMNIST('./FashionMNIST', download=True, transform=final_image_transform, train=True)
-data_loader = torch.utils.data.DataLoader(data,
-                                          batch_size=batch_size,
-                                          shuffle=True,)
+envs = list()
+for data, n_classes in [
+    (datasets.FashionMNIST('./FashionMNIST', download=True, transform=final_image_transform, train=True), 10),
+    (datasets.CIFAR10('./CIFAR10', download=True, transform=final_image_transform, train=True), 10),
+    #(datasets.EMNIST('./EMNIST', download=True, transform=final_image_transform, train=True, split='balanced'), 47),
+    (datasets.SVHN('./SVHN', download=True, transform=final_image_transform, split='train'), 10),
+]:
+    data_loader = torch.utils.data.DataLoader(data,
+                                              batch_size=batch_size,
+                                              shuffle=True,)
+    envs.append(env_from_dataloader(data_loader, n_classes=n_classes))
 
-#TODO CIFAR10, EMNIST, VHSN
-env = env_from_dataloader(data_loader, n_classes=10)
-
-world_size = env.world.observe().shape[0]
-action_size = len(env.world.actions())
+world_size = envs[0].world.observe().shape[0]
+action_size = len(envs[0].world.actions())
 embeding = MemoryEmbed(world_size, action_size).to(device)
 embeding_optimizer = optim.RMSprop(embeding.parameters())
 memory = SessionMemory(100)
@@ -87,9 +94,12 @@ def optimize_memory():
     if len(e_loss):
         e_loss = torch.mean(torch.stack(e_loss))
         e_loss.backward()
+        for param in embeding.parameters():
+            param.grad.data.clamp_(-1, 1)
         embeding_optimizer.step()
+        print('Memory Loss: %.4f' % e_loss.item())
 
-trainer = meta_agent([env], memory, embeding)
+trainer = meta_agent(envs, memory, embeding)
 import copy
 if os.path.exists('./trainer.pth'):
     trainer.policy_net.load_state_dict(torch.load('./trainer.pth'))

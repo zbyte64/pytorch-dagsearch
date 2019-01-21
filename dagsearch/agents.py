@@ -29,6 +29,7 @@ class Agent(object):
         self.target_net = copy.deepcopy(policy_net)
         self.steps_done = 0
         self.prior_action = self.generate_initial_action()
+        self.current_session = []
     
     def generate_initial_action(self):
         return torch.zeros(1).unsqueeze(0)
@@ -50,7 +51,8 @@ class Agent(object):
                 y = torch.softmax(self.policy_net(state), dim=1)
                 m = torch.distributions.categorical.Categorical(y)
                 a = m.sample().unsqueeze(1)
-                if a != a:
+                _a = a.item()
+                if _a > self.action_size or _a < 0:
                     a = torch.tensor([[self.env.action_space.sample()]], dtype=torch.int64)
             else:
                 a = torch.tensor([[self.env.action_space.sample()]], dtype=torch.int64)
@@ -118,20 +120,22 @@ class Agent(object):
         action = self.select_action(obs)
         assert action.dtype == torch.int64, str(action.dtype)
         next_state, reward, episode_over, info = self.env.step(int(action.item()))
-        self.memory.record(state, action, next_state, reward, episode_over, obs)
+        self.current_session = self.memory.record(
+            self.current_session, 
+            state, action, next_state, reward, episode_over, obs)
         if episode_over:
             self.env.reset()
             self.hidden_state = self.embeding.generate_hidden_state()
             self.prior_action = self.generate_initial_action()
         # Update the target network, copying all weights and biases in DQN
         if self.steps_done % TARGET_UPDATE == 0:
-            self.target_net.load_state_dict(self.policy_net.state_dict())
             print('Loss %.4f , Gas %.2f' % (info['loss'], info['gas']))
         self.steps_done += 1
     
     def tick_for(self, n):
         for i in range(n):
             self.tick()
+        self.target_net.load_state_dict(self.policy_net.state_dict())
 
 
 class MetaAgent(Agent):
