@@ -106,7 +106,7 @@ class MemoryEmbed(nn.Module):
             hidden_state = self.generate_hidden_state(1)
             z, _ = self(states[:-1], action_encode[:-1], hidden_state)
             next_state = states[1:]
-            _loss = -z.log_prob(next_state)
+            _loss = 1-z.log_prob(next_state)
             _loss = torch.mean(_loss)
             loss.append(_loss)
         return loss

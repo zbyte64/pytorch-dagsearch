@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import torch.optim as optim
 import copy
 import math
 import random
@@ -124,9 +125,7 @@ class Agent(object):
             self.current_session, 
             state, action, next_state, reward, episode_over, obs)
         if episode_over:
-            self.env.reset()
-            self.hidden_state = self.embeding.generate_hidden_state()
-            self.prior_action = self.generate_initial_action()
+            self.end_episode()
         # Update the target network, copying all weights and biases in DQN
         if self.steps_done % TARGET_UPDATE == 0:
             print('Loss %.4f , Gas %.2f' % (info['loss'], info['gas']))
@@ -136,15 +135,45 @@ class Agent(object):
         for i in range(n):
             self.tick()
         self.target_net.load_state_dict(self.policy_net.state_dict())
+    
+    def end_episode(self):
+        self.env.reset()
+        self.hidden_state = self.embeding.generate_hidden_state()
+        self.prior_action = self.generate_initial_action()
 
 
 class MetaAgent(Agent):
     def __init__(self, env, memory, embeding, policy_net, child_envs):
         super(MetaAgent, self).__init__(env, memory, embeding, copy.deepcopy(policy_net))
         self.child_agents = [Agent(env, memory, embeding, policy_net) for env in child_envs]
+        self.optimizer = optim.RMSprop(self.policy_net.parameters())
     
     def tick(self):
         for agent in self.child_agents:
             #perform action in environment
             agent.tick()
         super(MetaAgent, self).tick()
+        self.optimize()
+    
+    def tick_for(self, n):
+        self.world.initial_graph = copy.deepcopy(self.policy_net)
+        for agent in self.child_agents:
+            agent.policy_net = self.world.initial_graph
+            agent.target_net = self.target_net
+        super(MetaAgent, self).tick_for(n)
+    
+    def optimize(self):
+        self.optimizer.zero_grad()
+        loss = self.sample_loss()
+        if loss is not None:
+            c_loss = self.child_agents[0].sample_loss()
+            if c_loss < loss * .9:
+                self.policy_net = copy.deepcopy(self.world.graph)
+                self.target_net = copy.deepcopy(self.world.graph)
+                self.optimizer = optim.RMSprop(self.policy_net.parameters())
+            else:
+                loss.backward()
+                for param in self.policy_net.parameters():
+                    if param.grad is not None:
+                        param.grad.data.clamp_(-1, 1)
+                self.optimizer.step()

@@ -51,14 +51,13 @@ def meta_agent(envs, memory, embedding):
     #include memory embeding 
     in_dim = (world_size*3,)
     out_dim = (action_size, )
-    g = Graph(cell_types, in_dim, channel_dim=1).to(device)
-    g.create_hypercell(out_dim)
-    g.create_hypercell((world_size, ))
-    policy_net = g
+    policy_net = Graph(cell_types, in_dim, channel_dim=1).to(device)
+    policy_net.create_hypercell(out_dim)
+    policy_net.create_hypercell((world_size, ))
     def sample_loss(graph):
-        #our world loss is our agent loss?
-        return ma.sample_loss()
-    world = World(g, sample_loss=sample_loss, initial_gas=30, max_gas=600)
+        #our world loss is our child agent loss
+        return ma.child_agents[0].sample_loss()
+    world = World(policy_net, sample_loss=sample_loss, initial_gas=30, max_gas=600)
     env = DagSearchEnv(world)
     ma = MetaAgent(env, memory, embeding, policy_net, child_envs=envs)
     return ma
