@@ -4,10 +4,11 @@ from dagsearch.world import World
 from dagsearch.cells import CELL_TYPES
 from dagsearch.dag_env import DagSearchEnv
 from dagsearch.memory_embeding import SessionMemory, MemoryEmbed
-from dagsearch.agents import Agent, MetaAgent
+from dagsearch.agents import Agent, Trainer
 from dagsearch.utils import inf_data
 from dagsearch.env import *
 from torchvision import datasets, transforms
+import copy
 
 from torch import nn
 import torch.optim as optim
@@ -45,7 +46,7 @@ def env_from_dataloader(dataloader, n_classes):
     return env
 
 
-def meta_agent(envs, memory, embedding):
+def meta_trainer(envs, memory, embedding):
     world_size = envs[0].world.observe().shape[0]
     action_size = len(envs[0].world.actions())
     #include memory embeding 
@@ -55,12 +56,16 @@ def meta_agent(envs, memory, embedding):
     policy_net.create_hypercell(out_dim)
     policy_net.create_hypercell((world_size, ))
     def sample_loss(graph):
-        #our world loss is our child agent loss
-        return ma.child_agents[0].sample_loss()
-    world = World(policy_net, sample_loss=sample_loss, initial_gas=30, max_gas=600)
-    env = DagSearchEnv(world)
-    ma = MetaAgent(env, memory, embeding, policy_net, child_envs=envs)
-    return ma
+        c_trainer = Trainer(graph, [c_a], target_net=trainer.target_net)
+        return c_trainer.sample_loss()
+    c_policy = copy.deepcopy(policy_net)
+    world = World(c_policy, sample_loss=sample_loss, initial_gas=30, max_gas=600)
+    meta_env = DagSearchEnv(world)
+    c_a = Agent(meta_env, memory, embedding, policy_net)
+    agents = [Agent(env, memory, embeding, policy_net) for env in envs]
+    agents.append(c_a)
+    trainer = Trainer(policy_net, agents)
+    return trainer
 
 
 batch_size = 32
@@ -98,7 +103,7 @@ def optimize_memory():
         embeding_optimizer.step()
         print('Memory Loss: %.4f' % e_loss.item())
 
-trainer = meta_agent(envs, memory, embeding)
+trainer = meta_trainer(envs, memory, embeding)
 import copy
 if os.path.exists('./trainer.pth'):
     trainer.policy_net.load_state_dict(torch.load('./trainer.pth'))
@@ -110,7 +115,13 @@ print(list(trainer.policy_net._modules.keys()))
 while True:
     trainer.tick_for(1000)
     optimize_memory()
-    #TODO upsert if trainer.sample_loss > trainer.world.scoreboard.leaders
+    c_loss = envs[-1].world._sample_loss()
+    m_loss = trainer.sample_loss()
+    if c_loss < m_loss * .9:
+        trainer.set_policy(copy.deepcopy(envs[-1].world.graph))
+    else:
+        best_policy_net = copy.deepcopy(trainer.policy_net)
+        envs[-1].world.initial_graph = best_policy_net
     #env.render()
     #print('saving...')
     torch.save(trainer.policy_net.state_dict(), './trainer.pth')

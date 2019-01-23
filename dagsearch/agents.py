@@ -27,7 +27,6 @@ class Agent(object):
         self.embeding = embeding
         self.hidden_state = embeding.generate_hidden_state()
         self.policy_net = policy_net.to(device)
-        self.target_net = copy.deepcopy(policy_net)
         self.steps_done = 0
         self.prior_action = self.generate_initial_action()
         self.current_session = []
@@ -72,6 +71,80 @@ class Agent(object):
         obs = torch.cat([state, state_embed.detach()], dim=1).to(device)
         return obs
 
+    def tick(self):
+        state = self.env.observe().to(device)
+        #create embed repr of world by predicting action result
+        obs = self.encode_world(state, self.prior_action).to(device)
+        # Select and perform an action
+        action = self.select_action(obs)
+        assert action.dtype == torch.int64, str(action.dtype)
+        next_state, reward, episode_over, info = self.env.step(int(action.item()))
+        self.current_session = self.memory.record(
+            self.current_session, 
+            state, action, next_state, reward, episode_over, obs)
+        if episode_over:
+            self.end_episode()
+        # Update the target network, copying all weights and biases in DQN
+        if self.steps_done % TARGET_UPDATE == 0:
+            print('Loss %.4f , Gas %.2f' % (info['loss'], info['gas']))
+        self.steps_done += 1
+    
+    def tick_for(self, n):
+        for i in range(n):
+            self.tick()
+    
+    def end_episode(self):
+        self.env.reset()
+        self.hidden_state = self.embeding.generate_hidden_state()
+        self.prior_action = self.generate_initial_action()
+
+
+class Trainer(object):
+    def __init__(self, policy_net, agents, target_net=None):
+        self.policy_net = policy_net
+        self.target_net = target_net or copy.deepcopy(policy_net)
+        self.agents = agents
+        self.optimizer = optim.RMSprop(self.policy_net.parameters())
+    
+    @property
+    def envs(self):
+        return [agent.env for agent in self.agents]
+    
+    @property
+    def memory(self):
+        return self.agents[0].memory
+    
+    @property
+    def embeding(self):
+        return self.agents[0].embeding
+
+    def tick(self):
+        for agent in self.agents:
+            #perform action in environment
+            agent.tick()
+        self.optimize()
+    
+    def set_policy(self, policy_net):
+        self.policy_net = policy_net
+        self.target_net = copy.deepcopy(policy_net)
+        for agent in agents:
+            agent.policy_net = policy_net
+    
+    def tick_for(self, n):
+        for i in range(n):
+            self.tick()
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+    
+    def optimize(self):
+        self.optimizer.zero_grad()
+        loss = self.sample_loss()
+        if loss is not None:
+            loss.backward()
+            for param in self.policy_net.parameters():
+                if param.grad is not None:
+                    param.grad.data.clamp_(-1, 1)
+            self.optimizer.step()
+
     def sample_loss(self):
         if len(self.memory.transitions) < BATCH_SIZE:
             return None
@@ -98,8 +171,8 @@ class Agent(object):
         next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1)[0].detach()
         # Compute the expected Q values
         expected_state_action_values = (next_state_values * GAMMA) + reward_batch
-        expected_state_action_values[torch.isnan(expected_state_action_values)] = self.env.action_space.sample()
-        state_action_values[torch.isnan(state_action_values)] = self.env.action_space.sample()
+        expected_state_action_values[torch.isnan(expected_state_action_values)] = self.envs[0].action_space.sample()
+        state_action_values[torch.isnan(state_action_values)] = self.envs[0].action_space.sample()
 
         # Compute Huber loss
         #print(state_action_values.shape, expected_state_action_values.shape)
@@ -112,68 +185,3 @@ class Agent(object):
         #for param in self.policy_net.parameters():
         #    param.grad.data.clamp_(-1, 1)
         return loss
-
-    def tick(self):
-        state = self.env.observe().to(device)
-        #create embed repr of world by predicting action result
-        obs = self.encode_world(state, self.prior_action).to(device)
-        # Select and perform an action
-        action = self.select_action(obs)
-        assert action.dtype == torch.int64, str(action.dtype)
-        next_state, reward, episode_over, info = self.env.step(int(action.item()))
-        self.current_session = self.memory.record(
-            self.current_session, 
-            state, action, next_state, reward, episode_over, obs)
-        if episode_over:
-            self.end_episode()
-        # Update the target network, copying all weights and biases in DQN
-        if self.steps_done % TARGET_UPDATE == 0:
-            print('Loss %.4f , Gas %.2f' % (info['loss'], info['gas']))
-        self.steps_done += 1
-    
-    def tick_for(self, n):
-        for i in range(n):
-            self.tick()
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-    
-    def end_episode(self):
-        self.env.reset()
-        self.hidden_state = self.embeding.generate_hidden_state()
-        self.prior_action = self.generate_initial_action()
-
-
-class MetaAgent(Agent):
-    def __init__(self, env, memory, embeding, policy_net, child_envs):
-        super(MetaAgent, self).__init__(env, memory, embeding, copy.deepcopy(policy_net))
-        self.child_agents = [Agent(env, memory, embeding, policy_net) for env in child_envs]
-        self.optimizer = optim.RMSprop(self.policy_net.parameters())
-    
-    def tick(self):
-        for agent in self.child_agents:
-            #perform action in environment
-            agent.tick()
-        super(MetaAgent, self).tick()
-        self.optimize()
-    
-    def tick_for(self, n):
-        self.world.initial_graph = copy.deepcopy(self.policy_net)
-        for agent in self.child_agents:
-            agent.policy_net = self.world.initial_graph
-            agent.target_net = self.target_net
-        super(MetaAgent, self).tick_for(n)
-    
-    def optimize(self):
-        self.optimizer.zero_grad()
-        loss = self.sample_loss()
-        if loss is not None:
-            c_loss = self.child_agents[0].sample_loss()
-            if c_loss < loss * .9:
-                self.policy_net = copy.deepcopy(self.world.graph)
-                self.target_net = copy.deepcopy(self.world.graph)
-                self.optimizer = optim.RMSprop(self.policy_net.parameters())
-            else:
-                loss.backward()
-                for param in self.policy_net.parameters():
-                    if param.grad is not None:
-                        param.grad.data.clamp_(-1, 1)
-                self.optimizer.step()
