@@ -30,10 +30,10 @@ class Agent(object):
         self.steps_done = 0
         self.prior_action = self.generate_initial_action()
         self.current_session = []
-    
+
     def generate_initial_action(self):
         return torch.zeros(1).unsqueeze(0)
-    
+
     @property
     def action_size(self):
         return self.embeding.action_size
@@ -41,7 +41,7 @@ class Agent(object):
     @property
     def world(self):
         return self.env.world
-        
+
     def select_action(self, state):
         sample = random.random()
         eps_threshold = EPS_END + (EPS_START - EPS_END) * \
@@ -57,7 +57,7 @@ class Agent(object):
             else:
                 a = torch.tensor([[self.env.action_space.sample()]], dtype=torch.int64)
             return a
-    
+
     def encode_world(self, state, prior_action):
         with torch.no_grad():
             prior_action = prior_action.type(torch.int64).squeeze()
@@ -80,7 +80,7 @@ class Agent(object):
         assert action.dtype == torch.int64, str(action.dtype)
         next_state, reward, episode_over, info = self.env.step(int(action.item()))
         self.current_session = self.memory.record(
-            self.current_session, 
+            self.current_session,
             state, action, next_state, reward, episode_over, obs)
         if episode_over:
             self.end_episode()
@@ -88,11 +88,11 @@ class Agent(object):
         if self.steps_done % TARGET_UPDATE == 0:
             print('Loss %.4f , Gas %.2f' % (info['loss'], info['gas']))
         self.steps_done += 1
-    
+
     def tick_for(self, n):
         for i in range(n):
             self.tick()
-    
+
     def end_episode(self):
         self.env.reset()
         self.hidden_state = self.embeding.generate_hidden_state()
@@ -105,15 +105,15 @@ class Trainer(object):
         self.target_net = target_net or copy.deepcopy(policy_net)
         self.agents = agents
         self.optimizer = optim.RMSprop(self.policy_net.parameters())
-    
+
     @property
     def envs(self):
         return [agent.env for agent in self.agents]
-    
+
     @property
     def memory(self):
         return self.agents[0].memory
-    
+
     @property
     def embeding(self):
         return self.agents[0].embeding
@@ -123,18 +123,18 @@ class Trainer(object):
             #perform action in environment
             agent.tick()
         self.optimize()
-    
+
     def set_policy(self, policy_net):
         self.policy_net = policy_net
         self.target_net = copy.deepcopy(policy_net)
-        for agent in agents:
+        for agent in self.agents:
             agent.policy_net = policy_net
-    
+
     def tick_for(self, n):
         for i in range(n):
             self.tick()
         self.target_net.load_state_dict(self.policy_net.state_dict())
-    
+
     def optimize(self):
         self.optimizer.zero_grad()
         loss = self.sample_loss()
@@ -179,7 +179,7 @@ class Trainer(object):
         loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
         _loss = float(loss.item())
         assert _loss >= 0., str((expected_state_action_values, state_action_values, loss))
-        
+
         # Optimize the model
         #loss.backward()
         #for param in self.policy_net.parameters():
