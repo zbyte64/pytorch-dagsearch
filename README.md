@@ -16,6 +16,7 @@ g.add_link(g.layers[0], g.layers[2])
 #Mutes an input, useful for ENAS
 g.toggle_link(g.layers[0], g.layers[2])
 ```
+Graphs are also expandable, new nodes are added in front.
 
 `Node` is a special layer that allows for on-the-fly hyperparam search.
 Unlike a layer, it specifies it's in and out dim size and initializes candidate cells to that size.

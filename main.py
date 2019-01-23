@@ -22,7 +22,7 @@ cell_types = list(CELL_TYPES.keys())
 
 def env_from_dataloader(dataloader, n_classes):
     '''
-    Given a classification task/dataloader, 
+    Given a classification task/dataloader,
     returns an OpenAI gym environment for ENAS
     '''
     data_iter = inf_data(dataloader)
@@ -49,7 +49,7 @@ def env_from_dataloader(dataloader, n_classes):
 def meta_trainer(envs, memory, embedding):
     world_size = envs[0].world.observe().shape[0]
     action_size = len(envs[0].world.actions())
-    #include memory embeding 
+    #include memory embeding
     in_dim = (world_size*3,)
     out_dim = (action_size, )
     policy_net = Graph(cell_types, in_dim, channel_dim=1).to(device)
@@ -112,16 +112,17 @@ if os.path.exists('./embeding.pth'):
 #trainer.train(5)
 #env.render()
 print(list(trainer.policy_net._modules.keys()))
+meta_agent = trainer.agents[-1]
 while True:
-    trainer.tick_for(1000)
+    trainer.tick_for(100)
     optimize_memory()
-    c_loss = envs[-1].world._sample_loss()
+    c_loss = meta_agent.world._sample_loss()
     m_loss = trainer.sample_loss()
     if c_loss < m_loss * .9:
-        trainer.set_policy(copy.deepcopy(envs[-1].world.graph))
+        trainer.set_policy(copy.deepcopy(meta_agent.world.graph))
     else:
         best_policy_net = copy.deepcopy(trainer.policy_net)
-        envs[-1].world.initial_graph = best_policy_net
+        meta_agent.world.initial_graph = best_policy_net
     #env.render()
     #print('saving...')
     torch.save(trainer.policy_net.state_dict(), './trainer.pth')
